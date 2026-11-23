@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Rezept-Bibliothek",
+        "description": "Rezept-Bibliothek einrichten? Die Rezepte werden lokal in Home Assistant gespeichert und stehen allen Home-Assistant-Benutzern zur Verfügung."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Die Rezept-Bibliothek ist bereits eingerichtet. Es ist nur eine Bibliothek möglich."
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "domain": "recipe_library",
+  "name": "Recipe Library",
+  "codeowners": ["@PreBullet"],
+  "config_flow": true,
+  "dependencies": ["frontend", "http"],
+  "documentation": "https://github.com/PreBullet/ha-recipe-library",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/PreBullet/ha-recipe-library/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
