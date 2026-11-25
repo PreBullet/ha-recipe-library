@@ -1,0 +1,5 @@
+# Test dependencies. pytest-homeassistant-custom-component also installs a
+# matching Home Assistant; the frontend package is needed because the
+# integration depends on the "frontend" component.
+pytest-homeassistant-custom-component
+home-assistant-frontend

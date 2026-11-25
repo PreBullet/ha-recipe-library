@@ -1,39 +1,74 @@
 """The Recipe Library integration.
 
-A simple recipe library for Home Assistant: import recipes from websites,
-videos and social media (AI-assisted) or create them manually, organise them
-with tags and browse them in a dashboard card.
+A simple recipe library for Home Assistant: create recipes manually (imports
+from websites, videos and social media follow), organise them with tags and
+browse them in a dashboard card.
 
-This is the scaffold: the integration sets itself up and does nothing else yet.
+The integration stores the recipes, offers a WebSocket API for the card and
+serves and registers the card itself, so no separate card installation and no
+manual dashboard resource are needed.
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
+from homeassistant.components import frontend
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.loader import async_get_integration
+from homeassistant.util.hass_dict import HassKey
 
-from .const import DOMAIN
+from .const import CARD_FILENAME, CARD_URL, DOMAIN
+from .storage import RecipeStore
+from .ws_api import async_register_commands
 
 _LOGGER = logging.getLogger(__name__)
+
+# Static paths cannot be unregistered, so they are registered once per run.
+DATA_FRONTEND_REGISTERED: HassKey[bool] = HassKey(f"{DOMAIN}_frontend_registered")
+
+
+async def _async_register_card(hass: HomeAssistant) -> str:
+    """Serve the dashboard card and load it in the frontend. Returns its URL."""
+    integration = await async_get_integration(hass, DOMAIN)
+    # The version in the URL makes browsers fetch the new file after an update.
+    url = f"{CARD_URL}?v={integration.version}"
+
+    if not hass.data.get(DATA_FRONTEND_REGISTERED):
+        card_file = Path(__file__).parent / "frontend" / CARD_FILENAME
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(CARD_URL, str(card_file))]
+        )
+        hass.data[DATA_FRONTEND_REGISTERED] = True
+
+    frontend.add_extra_js_url(hass, url)
+    return url
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Recipe Library from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
+    store = RecipeStore(hass)
+    await store.async_load()
+    hass.data[DOMAIN] = store
 
-    # Planned, in this order (see README roadmap):
-    #   1. Recipe storage (Home Assistant Store) incl. tags and tag renaming
-    #   2. WebSocket API for the card: list, get, create, update, delete,
-    #      plus tag management
-    #   3. Serve and register the dashboard card from ./frontend
-    #   4. Import services: website, YouTube, TikTok/Instagram, text/image
-    _LOGGER.debug("Recipe Library set up")
+    async_register_commands(hass)
+
+    card_url = await _async_register_card(hass)
+    entry.async_on_unload(lambda: frontend.remove_extra_js_url(hass, card_url))
+
+    # Still to come, in this order (see README roadmap):
+    #   import services: website, YouTube, TikTok/Instagram, text/image
+    _LOGGER.debug("Recipe Library set up with %s", card_url)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    hass.data.pop(DOMAIN, None)
+    store: RecipeStore | None = hass.data.pop(DOMAIN, None)
+    if store is not None:
+        # Delayed saves are written at shutdown, but not when only unloading.
+        await store.async_flush()
     return True

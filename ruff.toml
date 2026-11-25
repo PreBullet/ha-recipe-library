@@ -1,0 +1,9 @@
+# Keep the Python code consistent; checked in CI later.
+target-version = "py313"
+line-length = 88
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[lint.isort]
+known-first-party = ["custom_components"]
