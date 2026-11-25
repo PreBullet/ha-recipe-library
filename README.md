@@ -141,6 +141,10 @@ pytest
 
 The card is plain JavaScript without a build step or dependencies, edit `frontend/recipe-library-card.js` directly. User content is only ever inserted as text, never as HTML.
 
+## How this was made
+
+This integration was created with the help of AI ("vibe coding"): the code, the tests and the documentation were written together with Claude (Anthropic), guided by the repository owner. It comes with unit and integration tests, but like any software it can contain mistakes. Please keep a backup of your Home Assistant before using it, and report problems as issues. Pull requests are welcome.
+
 ## License
 
 [MIT](LICENSE)
@@ -160,3 +164,5 @@ Bewusst nicht enthalten: Essensplaner, Einkaufslisten, Zeitstrahl, Zutaten-Daten
 **Abhängigkeiten:** keine zu anderen Karten oder Integrationen, keine Python-Pakete, kein Netzwerkzugriff. Voraussetzung sind nur die Home-Assistant-Bordmittel `frontend`, `http` und `websocket_api`.
 
 **Daten:** gespeichert lokal in der Home-Assistant-Datei `.storage/recipe_library`, enthalten in den normalen Backups.
+
+**Entstehung:** Diese Integration ist mit Hilfe von KI entstanden („Vibe-Coding“, zusammen mit Claude von Anthropic). Sie ist getestet, kann aber wie jede Software Fehler enthalten. Bitte vor der Nutzung ein Backup von Home Assistant anlegen.
