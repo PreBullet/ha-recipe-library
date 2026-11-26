@@ -281,3 +281,61 @@ def test_load_does_not_enforce_limits(monkeypatch):
     library.save_recipe({"title": "B"})
     monkeypatch.setattr(lib, "MAX_RECIPES", 1)
     assert len(RecipeLibrary(library.as_dict()).snapshot()["recipes"]) == 2
+
+
+# -- photos ----------------------------------------------------------------
+
+PHOTO = "0123456789abcdef0123456789abcdef.jpg"
+OTHER_PHOTO = "fedcba9876543210fedcba9876543210.png"
+
+
+def test_image_is_optional_and_stored():
+    library = make_library()
+    plain = library.save_recipe({"title": "Ohne"})
+    assert plain["image"] == ""
+    with_photo = library.save_recipe({"title": "Mit", "image": PHOTO})
+    assert with_photo["image"] == PHOTO
+    assert library.is_image_used(PHOTO)
+    assert library.used_images() == {PHOTO}
+
+
+def test_image_can_be_replaced_and_removed():
+    library = make_library()
+    recipe = library.save_recipe({"title": "A", "image": PHOTO})
+    replaced = library.save_recipe({"title": "A", "image": OTHER_PHOTO}, recipe["id"])
+    assert replaced["image"] == OTHER_PHOTO
+    assert not library.is_image_used(PHOTO)
+    removed = library.save_recipe({"title": "A", "image": ""}, recipe["id"])
+    assert removed["image"] == ""
+    assert library.used_images() == set()
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "../x.jpg",
+        "photo.jpg",
+        PHOTO.upper(),
+        PHOTO.replace(".jpg", ".svg"),
+        "http://example.com/a.jpg",
+        5,
+        ["a"],
+    ],
+)
+def test_invalid_image_names_are_rejected(image):
+    library = make_library()
+    with pytest.raises(InvalidDataError):
+        library.save_recipe({"title": "A", "image": image})
+    assert library.snapshot()["recipes"] == []
+
+
+def test_image_survives_roundtrip_and_load_drops_bad_names():
+    library = make_library()
+    library.save_recipe({"title": "A", "image": PHOTO})
+    assert RecipeLibrary(library.as_dict()).used_images() == {PHOTO}
+    data = library.as_dict()
+    data["recipes"][0]["image"] = "../../etc/passwd"
+    assert RecipeLibrary(data).snapshot()["recipes"][0]["image"] == ""
+    # Data from before photos existed has no image field at all.
+    del data["recipes"][0]["image"]
+    assert RecipeLibrary(data).snapshot()["recipes"][0]["image"] == ""
