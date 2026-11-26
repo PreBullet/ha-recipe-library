@@ -16,6 +16,10 @@
 const CARD_TYPE = "recipe-library-card";
 const WS = "recipe_library";
 const RETRY_MS = 10000;
+const IMAGE_URL = "/api/recipe_library/image/";
+const IMAGE_NAME = /^[0-9a-f]{32}\.(jpg|png|webp)$/;
+const PHOTO_MAX_EDGE = 960; // longest side in pixels after shrinking
+const PHOTO_MAX_BYTES = 1500000; // stay far below the server limit of 2 MB
 
 /* ------------------------------------------------------------------ i18n */
 
@@ -88,6 +92,13 @@ const STRINGS = {
     errNameExists: "A category with this name already exists.",
     errLimit: "The size limit of the library is reached.",
     errGeneric: "Something went wrong. Please try again.",
+    fPhoto: "Photo",
+    choosePhoto: "Choose photo",
+    changePhoto: "Change photo",
+    removePhoto: "Remove photo",
+    uploading: "Uploading…",
+    errPhoto: "This image could not be read. Try a JPEG or PNG photo.",
+    errTooLarge: "The image is too large.",
   },
   de: {
     title: "Rezepte",
@@ -157,6 +168,13 @@ const STRINGS = {
     errNameExists: "Eine Kategorie mit diesem Namen gibt es schon.",
     errLimit: "Die maximale Größe der Bibliothek ist erreicht.",
     errGeneric: "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
+    fPhoto: "Foto",
+    choosePhoto: "Foto wählen",
+    changePhoto: "Foto ändern",
+    removePhoto: "Foto entfernen",
+    uploading: "Lädt hoch …",
+    errPhoto: "Dieses Bild konnte nicht gelesen werden. Versuche ein JPEG- oder PNG-Foto.",
+    errTooLarge: "Das Bild ist zu groß.",
   },
 };
 
@@ -241,6 +259,53 @@ const splitParagraphs = (text) =>
     .map((part) => part.trim())
     .filter(Boolean);
 
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Shrink a photo in the browser and return it as base64 JPEG. Phone photos are
+ * several MB; this keeps uploads small and drops all EXIF data (such as the
+ * location) because the picture is redrawn on a canvas.
+ */
+async function shrinkImage(file) {
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch (_err) {
+    bitmap = await createImageBitmap(file); // older browsers
+  }
+  try {
+    let edge = PHOTO_MAX_EDGE;
+    let quality = 0.82;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#fff"; // transparent PNGs become white, not black
+      context.fillRect(0, 0, width, height);
+      context.drawImage(bitmap, 0, 0, width, height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      if (!blob) throw new Error("encoding failed");
+      if (blob.size <= PHOTO_MAX_BYTES) return blobToBase64(blob);
+      edge = Math.round(edge * 0.75);
+      quality = Math.max(0.5, quality - 0.1);
+    }
+  } finally {
+    if (typeof bitmap.close === "function") bitmap.close();
+  }
+  throw new Error("image too large");
+}
+
 /* ----------------------------------------------------------------- style */
 
 const STYLE = `
@@ -312,6 +377,10 @@ textarea.field { padding: 12px 16px; line-height: 24px; resize: vertical; min-he
 
 .grid { display: grid; grid-template-columns: repeat(var(--rl-cols, 2), minmax(0, 1fr)); gap: 12px; align-content: start; padding-bottom: 88px; }
 .tile { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; width: 100%; padding: 8px 8px 12px; border: 0; border-radius: 18px; background: var(--rl-surface); text-align: left; }
+.thumb, .hero, .photo-box { position: relative; overflow: hidden; }
+.photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.photo-box { display: flex; align-items: center; justify-content: center; height: 180px; margin-top: 8px; border-radius: 16px; background: var(--rl-surface); color: var(--rl-muted); }
+.photo-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .thumb {
   display: flex; flex: none; align-items: center; justify-content: center; height: 96px; border-radius: 12px;
   background: var(--rl-surface); color: var(--rl-muted);
@@ -330,7 +399,7 @@ textarea.field { padding: 12px 16px; line-height: 24px; resize: vertical; min-he
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
 }
 
-.hero { display: flex; align-items: center; justify-content: center; height: 160px; margin-top: 12px; border-radius: 18px; background: var(--rl-surface); color: var(--rl-muted); }
+.hero { display: flex; align-items: center; justify-content: center; height: 200px; margin-top: 12px; border-radius: 18px; background: var(--rl-surface); color: var(--rl-muted); }
 @supports (color: color-mix(in srgb, red 50%, blue)) {
   .hero { background: color-mix(in srgb, var(--rl-accent) calc(10% + var(--tone, 0) * 4%), var(--rl-card)); }
 }
@@ -641,7 +710,7 @@ class RecipeLibraryCard extends HTMLElement {
       key && typeof active.selectionStart === "number"
         ? [active.selectionStart, active.selectionEnd]
         : null;
-    container.replaceChildren(...nodes);
+    container.replaceChildren(...nodes.filter(Boolean)); // null would become the text "null"
     if (!key) return;
     const el = container.querySelector(`[data-focus-key="${CSS.escape(key)}"]`);
     if (!el) return;
@@ -805,6 +874,29 @@ class RecipeLibraryCard extends HTMLElement {
     return names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0];
   }
 
+  _imageUrl(name) {
+    if (typeof name !== "string" || !IMAGE_NAME.test(name)) return null;
+    const path = `${IMAGE_URL}${name}`;
+    return typeof this._hass?.hassUrl === "function" ? this._hass.hassUrl(path) : path;
+  }
+
+  /** A box with the recipe photo, or a placeholder icon when there is none. */
+  _photo(recipe, className, iconSize, iconWidth) {
+    const box = h(
+      "div",
+      { class: className, vars: { "--tone": hashOf(recipe.title) % 5 } },
+      icon("dish", iconSize, iconWidth),
+    );
+    const url = this._imageUrl(recipe.image);
+    if (url) {
+      const img = h("img", { class: "photo", src: url, alt: "", loading: "lazy", decoding: "async" });
+      // If the photo cannot be loaded, the placeholder underneath stays visible.
+      img.addEventListener("error", () => img.remove());
+      box.append(img);
+    }
+    return box;
+  }
+
   _tile(recipe) {
     const meta = [recipe.time, this._tagSummary(recipe)].filter(Boolean).join(" · ");
     return h(
@@ -814,7 +906,7 @@ class RecipeLibraryCard extends HTMLElement {
         type: "button",
         onClick: () => this._go({ name: "recipe", id: recipe.id }),
       },
-      h("div", { class: "thumb", vars: { "--tone": hashOf(recipe.title) % 5 } }, icon("dish", 28, 1.8)),
+      this._photo(recipe, "thumb", 28, 1.8),
       h("div", { class: "title" }, recipe.title),
       meta ? h("div", { class: "meta" }, meta) : null,
     );
@@ -859,7 +951,7 @@ class RecipeLibraryCard extends HTMLElement {
       );
 
     const body = [
-      h("div", { class: "hero", vars: { "--tone": hashOf(recipe.title) % 5 } }, icon("dish", 40, 1.6)),
+      this._photo(recipe, "hero", 40, 1.6),
       h("div", { class: "r-title" }, recipe.title),
       facts.length ? h("div", { class: "facts" }, facts) : null,
       tagChips.length ? h("div", { class: "chips wrap" }, tagChips) : null,
@@ -985,6 +1077,10 @@ class RecipeLibraryCard extends HTMLElement {
       steps: (recipe?.steps ?? []).join("\n\n"),
       notes: recipe?.notes ?? "",
       source: recipe?.source ?? "",
+      image: recipe?.image ?? "",
+      originalImage: recipe?.image ?? "",
+      uploading: false,
+      photoError: null,
       saving: false,
       error: null,
       newTag: null, // null = closed, string = text of the open "new category" input
@@ -995,6 +1091,7 @@ class RecipeLibraryCard extends HTMLElement {
 
   _leaveEdit() {
     const id = this._draft?.id;
+    this._discardNewPhoto();
     this._draft = null;
     this._go(id && this._recipeById.has(id) ? { name: "recipe", id } : { name: "library" });
   }
@@ -1027,6 +1124,17 @@ class RecipeLibraryCard extends HTMLElement {
       return this._buildLibrary();
     }
     this._editEls = {
+      photo: h("div", { class: "photo-field" }),
+      file: h("input", {
+        type: "file",
+        accept: "image/*",
+        hidden: true,
+        onChange: (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = ""; // allow choosing the same file again
+          if (file) this._pickPhoto(file);
+        },
+      }),
       chips: h("div", { class: "chips wrap", role: "group", "aria-labelledby": "rl-tags-label" }),
       newTag: h("div", { class: "new-tag-wrap" }),
       error: h("div", { class: "error", role: "alert" }),
@@ -1037,13 +1145,16 @@ class RecipeLibraryCard extends HTMLElement {
       h(
         "div",
         { class: "top" },
-        this._backButton(this._t("back"), d.id && this._recipeById.has(d.id) ? { name: "recipe", id: d.id } : { name: "library" }),
+        this._iconButton("back", this._t("back"), () => this._leaveEdit()),
         h("div", { class: "h1" }, d.id ? this._t("editRecipe") : this._t("newRecipe")),
       ),
       h(
         "div",
         { class: "scroll", "data-scroll": "" },
         this._textField("title", this._t("fTitle")),
+        h("div", { class: "flabel", id: "rl-photo-label" }, this._t("fPhoto")),
+        els.photo,
+        els.file,
         h(
           "div",
           { class: "two" },
@@ -1076,8 +1187,105 @@ class RecipeLibraryCard extends HTMLElement {
       ),
     ];
     this._refreshDraftChips();
+    this._refreshPhoto();
     this._refreshSaveState();
     return nodes;
+  }
+
+  _refreshPhoto() {
+    const els = this._editEls;
+    const d = this._draft;
+    if (!els || !d || this._view.name !== "edit") return;
+    const box = h("div", { class: "photo-box" }, icon("dish", 40, 1.6));
+    const url = this._imageUrl(d.image);
+    if (url) {
+      const img = h("img", { class: "photo", src: url, alt: "" });
+      img.addEventListener("error", () => img.remove());
+      box.append(img);
+    }
+    const actions = h(
+      "div",
+      { class: "photo-actions" },
+      h(
+        "button",
+        {
+          class: "btn",
+          type: "button",
+          disabled: d.uploading,
+          "data-focus-key": "photo-choose",
+          onClick: () => els.file.click(),
+        },
+        d.uploading ? this._t("uploading") : d.image ? this._t("changePhoto") : this._t("choosePhoto"),
+      ),
+      d.image && !d.uploading
+        ? h(
+            "button",
+            { class: "btn", type: "button", "data-focus-key": "photo-remove", onClick: () => this._removePhoto() },
+            this._t("removePhoto"),
+          )
+        : null,
+    );
+    this._swap(els.photo, [
+      box,
+      actions,
+      d.photoError ? h("div", { class: "error", role: "alert" }, d.photoError) : null,
+    ]);
+  }
+
+  async _pickPhoto(file) {
+    const d = this._draft;
+    if (!d || d.uploading) return;
+    d.photoError = null;
+    d.uploading = true;
+    this._refreshPhoto();
+    this._refreshSaveState();
+    let uploaded = null;
+    let data = null;
+    try {
+      data = await shrinkImage(file);
+    } catch (_err) {
+      d.photoError = this._t("errPhoto"); // not an image, or one this browser cannot read
+    }
+    if (data) {
+      try {
+        uploaded = (await this._hass.callWS({ type: `${WS}/image/upload`, data })).image;
+      } catch (err) {
+        d.photoError = err?.code === "image_too_large" ? this._t("errTooLarge") : this._errorText(err);
+      }
+    }
+    d.uploading = false;
+    if (uploaded && this._draft !== d) {
+      // The form was closed while uploading: nobody will save this photo.
+      this._discardPhoto(uploaded);
+      return;
+    }
+    if (uploaded) {
+      this._discardNewPhoto(); // an earlier, unsaved upload of this form
+      d.image = uploaded;
+    }
+    this._refreshPhoto();
+    this._refreshSaveState();
+  }
+
+  _removePhoto() {
+    const d = this._draft;
+    if (!d) return;
+    this._discardNewPhoto();
+    d.image = "";
+    d.photoError = null;
+    this._refreshPhoto();
+  }
+
+  /** Delete a photo of this form that was uploaded but not saved. */
+  _discardNewPhoto() {
+    const d = this._draft;
+    if (d && d.image && d.image !== d.originalImage) this._discardPhoto(d.image);
+  }
+
+  _discardPhoto(name) {
+    // Best effort: the server only deletes photos that no recipe uses, and
+    // leftovers are cleaned up when Home Assistant starts.
+    Promise.resolve(this._hass.callWS({ type: `${WS}/image/discard`, image: name })).catch(() => {});
   }
 
   _refreshDraftChips() {
@@ -1187,13 +1395,13 @@ class RecipeLibraryCard extends HTMLElement {
     const els = this._editEls;
     if (!d || !els) return;
     els.error.textContent = d.error || "";
-    els.save.disabled = d.saving;
+    els.save.disabled = d.saving || d.uploading;
     els.save.replaceChildren(icon("check", 20, 2.2), d.saving ? this._t("saving") : this._t("save"));
   }
 
   async _save() {
     const d = this._draft;
-    if (!d || d.saving) return;
+    if (!d || d.saving || d.uploading) return;
     if (!d.title.trim()) {
       d.error = this._t("errTitle");
       this._refreshSaveState();
@@ -1213,6 +1421,7 @@ class RecipeLibraryCard extends HTMLElement {
       steps: splitParagraphs(d.steps),
       notes: d.notes,
       source: d.source,
+      image: d.image,
     };
     if (d.id) message.recipe_id = d.id;
     try {
