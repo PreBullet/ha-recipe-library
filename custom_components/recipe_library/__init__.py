@@ -1,8 +1,8 @@
 """The Recipe Library integration.
 
 A simple recipe library for Home Assistant: create recipes manually (imports
-from websites, videos and social media follow), organise them with tags and
-browse them in a dashboard card.
+from websites, videos and social media follow), add a photo, organise them with
+tags and browse them in a dashboard card.
 
 The integration stores the recipes, offers a WebSocket API for the card and
 serves and registers the card itself, so no separate card installation and no
@@ -23,11 +23,12 @@ from homeassistant.util.hass_dict import HassKey
 
 from .const import CARD_FILENAME, CARD_URL, DOMAIN
 from .storage import RecipeStore
+from .views import RecipeImageView
 from .ws_api import async_register_commands
 
 _LOGGER = logging.getLogger(__name__)
 
-# Static paths cannot be unregistered, so they are registered once per run.
+# Static paths and views cannot be unregistered, so they are registered once.
 DATA_FRONTEND_REGISTERED: HassKey[bool] = HassKey(f"{DOMAIN}_frontend_registered")
 
 
@@ -42,6 +43,7 @@ async def _async_register_card(hass: HomeAssistant) -> str:
         await hass.http.async_register_static_paths(
             [StaticPathConfig(CARD_URL, str(card_file))]
         )
+        hass.http.register_view(RecipeImageView())
         hass.data[DATA_FRONTEND_REGISTERED] = True
 
     frontend.add_extra_js_url(hass, url)
@@ -52,6 +54,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Recipe Library from a config entry."""
     store = RecipeStore(hass)
     await store.async_load()
+    await store.async_cleanup_images()
     hass.data[DOMAIN] = store
 
     async_register_commands(hass)

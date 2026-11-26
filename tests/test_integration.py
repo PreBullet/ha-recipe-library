@@ -1,7 +1,12 @@
 """Tests for the integration: setup, WebSocket API, storage and card delivery."""
 
+import base64
+import os
+import time
 from datetime import timedelta
+from pathlib import Path
 
+import pytest
 from homeassistant.components import frontend
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -17,6 +22,7 @@ from custom_components.recipe_library.const import (
     SAVE_DELAY,
     STORAGE_KEY,
 )
+from custom_components.recipe_library.images import MAX_IMAGE_BYTES
 
 
 async def setup_integration(hass: HomeAssistant) -> MockConfigEntry:
@@ -291,3 +297,243 @@ async def test_commands_fail_cleanly_when_not_loaded(
     assert response["error"]["code"] == "not_loaded"
     await client.send_json_auto_id({"type": f"{DOMAIN}/subscribe"})
     assert (await client.receive_json())["error"]["code"] == "not_loaded"
+
+
+# -- photos ----------------------------------------------------------------
+
+JPEG = b"\xff\xd8\xff\xe0" + b"photo-data" * 20
+PNG = b"\x89PNG\r\n\x1a\n" + b"more-photo-data" * 20
+
+
+def encoded(data: bytes) -> str:
+    """Return photo bytes as the card sends them."""
+    return base64.b64encode(data).decode()
+
+
+@pytest.fixture
+def image_dir(hass: HomeAssistant, tmp_path: Path) -> Path:
+    """Keep photo files of a test in a temporary configuration folder."""
+    hass.config.config_dir = str(tmp_path)
+    return tmp_path / ".storage" / "recipe_library_images"
+
+
+async def upload(client, data: bytes = JPEG) -> str:
+    """Upload a photo and return its file name."""
+    response = await call(client, "image/upload", data=encoded(data))
+    assert response["success"], response
+    return response["result"]["image"]
+
+
+async def test_photo_upload_save_and_serve(
+    hass: HomeAssistant, hass_ws_client, hass_client_no_auth, image_dir: Path
+) -> None:
+    """A photo can be uploaded, attached to a recipe and shown by the browser."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    name = await upload(client)
+    assert name.endswith(".jpg")
+    assert (image_dir / name).read_bytes() == JPEG
+
+    response = await call(client, "recipe/save", title="Mit Foto", image=name)
+    assert response["success"]
+    assert response["result"]["image"] == name
+
+    # The <img> tag of the browser cannot send a login, so no authentication.
+    http = await hass_client_no_auth()
+    served = await http.get(f"/api/recipe_library/image/{name}")
+    assert served.status == 200
+    assert served.headers["Content-Type"] == "image/jpeg"
+    assert "immutable" in served.headers["Cache-Control"]
+    assert served.headers["X-Content-Type-Options"] == "nosniff"
+    assert "sandbox" in served.headers["Content-Security-Policy"]
+    assert await served.read() == JPEG
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "0" * 32 + ".jpg",  # valid format, but no such photo
+        "..%2F..%2Fsecrets.yaml",
+        "%2e%2e%2f%2e%2e%2fconfiguration.yaml",
+        "abc.jpg",
+        "0" * 32 + ".svg",
+        "0" * 32 + ".jpg.txt",
+    ],
+)
+async def test_photo_view_rejects_unknown_and_invalid_names(
+    hass: HomeAssistant, hass_client_no_auth, image_dir: Path, name: str
+) -> None:
+    """Only existing photos with a valid name are served."""
+    await setup_integration(hass)
+    http = await hass_client_no_auth()
+    response = await http.get(f"/api/recipe_library/image/{name}")
+    # Home Assistant itself answers 400 for encoded path traversal; both refuse.
+    assert response.status in (400, 404)
+
+
+async def test_png_is_served_as_png(
+    hass: HomeAssistant, hass_ws_client, hass_client_no_auth, image_dir: Path
+) -> None:
+    """The content type follows the detected format."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    name = await upload(client, PNG)
+    assert name.endswith(".png")
+    http = await hass_client_no_auth()
+    assert (await http.get(f"/api/recipe_library/image/{name}")).headers[
+        "Content-Type"
+    ] == "image/png"
+
+
+@pytest.mark.parametrize(
+    ("data", "code"),
+    [
+        (encoded(b"just some text"), "invalid_format"),
+        ("%%% not base64 %%%", "invalid_format"),
+        (encoded(b"<svg onload=alert(1)></svg>"), "invalid_format"),
+        (encoded(JPEG + b"x" * MAX_IMAGE_BYTES), "image_too_large"),
+    ],
+)
+async def test_photo_upload_rejects_bad_data(
+    hass: HomeAssistant, hass_ws_client, image_dir: Path, data: str, code: str
+) -> None:
+    """Broken, unsupported and oversized uploads are refused and not stored."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    response = await call(client, "image/upload", data=data)
+    assert response["error"]["code"] == code
+    assert not image_dir.exists() or not list(image_dir.iterdir())
+
+
+async def test_photo_upload_is_available_to_non_admin_users(
+    hass: HomeAssistant,
+    hass_ws_client,
+    hass_read_only_access_token: str,
+    image_dir: Path,
+) -> None:
+    """Every Home Assistant user can add photos."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    assert (await upload(client)).endswith(".jpg")
+
+
+async def test_recipe_rejects_unknown_or_invalid_photo(
+    hass: HomeAssistant, hass_ws_client, image_dir: Path
+) -> None:
+    """A recipe can only use a photo that was uploaded."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass)
+
+    response = await call(client, "recipe/save", title="A", image="0" * 32 + ".jpg")
+    assert response["error"]["code"] == "not_found"
+    for bad in ("../../x.jpg", "photo.jpg", "0" * 32 + ".svg"):
+        response = await call(client, "recipe/save", title="A", image=bad)
+        assert response["error"]["code"] == "invalid_format"
+
+
+async def test_replaced_and_removed_photos_are_deleted(
+    hass: HomeAssistant, hass_ws_client, image_dir: Path
+) -> None:
+    """A photo file is deleted as soon as no recipe uses it any more."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    first = await upload(client)
+    second = await upload(client, PNG)
+    recipe = (await call(client, "recipe/save", title="A", image=first))["result"]
+
+    # Replace the photo: the old file goes, the new one stays.
+    await call(client, "recipe/save", recipe_id=recipe["id"], title="A", image=second)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert not (image_dir / first).exists()
+    assert (image_dir / second).exists()
+
+    # Saving without a photo removes it.
+    response = await call(client, "recipe/save", recipe_id=recipe["id"], title="A")
+    assert response["result"]["image"] == ""
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert not (image_dir / second).exists()
+
+
+async def test_deleting_a_recipe_deletes_its_photo(
+    hass: HomeAssistant, hass_ws_client, image_dir: Path
+) -> None:
+    """The photo goes together with its recipe."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    name = await upload(client)
+    recipe = (await call(client, "recipe/save", title="A", image=name))["result"]
+    assert (await call(client, "recipe/delete", recipe_id=recipe["id"]))["success"]
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert not (image_dir / name).exists()
+
+
+async def test_shared_photo_is_kept_while_another_recipe_uses_it(
+    hass: HomeAssistant, hass_ws_client, image_dir: Path
+) -> None:
+    """Deleting one of two recipes with the same photo keeps the file."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    name = await upload(client)
+    first = (await call(client, "recipe/save", title="A", image=name))["result"]
+    await call(client, "recipe/save", title="B", image=name)
+    await call(client, "recipe/delete", recipe_id=first["id"])
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert (image_dir / name).exists()
+
+
+async def test_discard_removes_only_unused_photos(
+    hass: HomeAssistant, hass_ws_client, image_dir: Path
+) -> None:
+    """Cancelling a form discards the upload, but never a photo in use."""
+    await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    unused = await upload(client)
+    used = await upload(client, PNG)
+    await call(client, "recipe/save", title="A", image=used)
+
+    assert (await call(client, "image/discard", image=unused))["success"]
+    assert (await call(client, "image/discard", image=used))["success"]
+    assert not (image_dir / unused).exists()
+    assert (image_dir / used).exists()
+
+    response = await call(client, "image/discard", image="../../etc/passwd")
+    assert response["error"]["code"] == "invalid_format"
+
+
+async def test_setup_removes_old_unused_photos(
+    hass: HomeAssistant, hass_ws_client, image_dir: Path
+) -> None:
+    """Old uploads without a recipe are cleaned up when the integration starts."""
+    entry = await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    used = await upload(client)
+    old = await upload(client)
+    recent = await upload(client)
+    await call(client, "recipe/save", title="A", image=used)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+    two_days_ago = time.time() - 2 * 24 * 3600
+    os.utime(image_dir / old, (two_days_ago, two_days_ago))
+    os.utime(image_dir / used, (two_days_ago, two_days_ago))
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert not (image_dir / old).exists()
+    assert (image_dir / used).exists()  # a recipe uses it
+    assert (image_dir / recent).exists()  # too new, may still be in a form
+
+
+async def test_setup_keeps_all_photos_when_the_library_is_empty(
+    hass: HomeAssistant, hass_ws_client, image_dir: Path
+) -> None:
+    """An unreadable data file must never lead to deleting every photo."""
+    entry = await setup_integration(hass)
+    client = await hass_ws_client(hass)
+    name = await upload(client)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    old = time.time() - 5 * 24 * 3600
+    os.utime(image_dir / name, (old, old))
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert (image_dir / name).exists()

@@ -8,14 +8,16 @@ Data model
 * A *tag* is ``{"id", "name"}``. Recipes reference tags by id, so renaming a tag
   changes one record and is reflected everywhere (recipes, filters).
 * A *recipe* is ``{"id", "title", "time", "servings", "tags", "ingredients",
-  "steps", "notes", "source", "created", "updated"}``. Ingredients are plain
-  text lines, there is no ingredient database.
+  "steps", "notes", "source", "image", "created", "updated"}``. Ingredients are
+  plain text lines, there is no ingredient database. ``image`` is the file
+  name of the photo (managed in ``images.py``) or an empty string.
 * Recipes are never locked: every recipe can be edited and deleted, regardless
   of how it was created.
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Callable, Mapping
 from copy import deepcopy
@@ -34,6 +36,9 @@ MAX_SOURCE = 2048
 MAX_NOTES = 5000
 MAX_LINES = 200  # ingredient lines / steps per recipe
 MAX_LINE = 3000
+
+# File name of a stored photo: random id plus a supported extension.
+IMAGE_NAME_RE = re.compile(r"^[0-9a-f]{32}\.(jpg|png|webp)$")
 
 
 class LibraryError(Exception):
@@ -113,6 +118,15 @@ def _tag_name(value: Any) -> str:
     return name
 
 
+def check_image_name(value: Any) -> str:
+    """Return a valid image file name (or empty string) or raise InvalidDataError."""
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str) or not IMAGE_NAME_RE.match(value):
+        raise InvalidDataError("image is not valid")
+    return value
+
+
 def _as_str(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
@@ -168,6 +182,12 @@ class RecipeLibrary:
                 "steps": _as_str_list(raw.get("steps")),
                 "notes": _as_str(raw.get("notes")),
                 "source": _as_str(raw.get("source")),
+                "image": (
+                    raw["image"]
+                    if isinstance(raw.get("image"), str)
+                    and IMAGE_NAME_RE.match(raw["image"])
+                    else ""
+                ),
                 "created": _as_str(raw.get("created")),
                 "updated": _as_str(raw.get("updated")),
             }
@@ -271,11 +291,20 @@ class RecipeLibrary:
             "steps": _lines(fields.get("steps"), "steps"),
             "notes": _text(fields.get("notes"), "notes", MAX_NOTES),
             "source": _text(fields.get("source"), "source", MAX_SOURCE),
+            "image": check_image_name(fields.get("image")),
             "created": existing["created"] if existing else now,
             "updated": now,
         }
         self._recipes[recipe["id"]] = recipe
         return deepcopy(recipe)
+
+    def used_images(self) -> set[str]:
+        """Return the file names of all photos that recipes refer to."""
+        return {r["image"] for r in self._recipes.values() if r["image"]}
+
+    def is_image_used(self, name: str) -> bool:
+        """Return whether any recipe uses this photo."""
+        return name in self.used_images()
 
     def delete_recipe(self, recipe_id: str) -> None:
         """Delete a recipe."""

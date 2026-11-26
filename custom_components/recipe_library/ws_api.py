@@ -7,6 +7,7 @@ of the generic event subscription because the latter is admin-only.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -17,12 +18,25 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import DOMAIN, SIGNAL_CHANGED
-from .library import LibraryError
+from .images import decode_upload
+from .library import LibraryError, NotFoundError, check_image_name
 from .storage import RecipeStore
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _get_store(hass: HomeAssistant) -> RecipeStore | None:
     return hass.data.get(DOMAIN)
+
+
+def _store_or_error(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> RecipeStore | None:
+    """Return the store, or answer with an error if the integration is unloaded."""
+    store = _get_store(hass)
+    if store is None:
+        connection.send_error(msg["id"], "not_loaded", "Recipe Library is not set up")
+    return store
 
 
 def _run(
@@ -32,9 +46,7 @@ def _run(
     action: Callable[[RecipeStore], Any],
 ) -> None:
     """Run a change on the library, persist it and answer the request."""
-    store = _get_store(hass)
-    if store is None:
-        connection.send_error(msg["id"], "not_loaded", "Recipe Library is not set up")
+    if (store := _store_or_error(hass, connection, msg)) is None:
         return
     try:
         result = action(store)
@@ -50,12 +62,17 @@ def _run(
 @callback
 def async_register_commands(hass: HomeAssistant) -> None:
     """Register all WebSocket commands."""
-    websocket_api.async_register_command(hass, ws_subscribe)
-    websocket_api.async_register_command(hass, ws_recipe_save)
-    websocket_api.async_register_command(hass, ws_recipe_delete)
-    websocket_api.async_register_command(hass, ws_tag_create)
-    websocket_api.async_register_command(hass, ws_tag_rename)
-    websocket_api.async_register_command(hass, ws_tag_delete)
+    for command in (
+        ws_subscribe,
+        ws_recipe_save,
+        ws_recipe_delete,
+        ws_tag_create,
+        ws_tag_rename,
+        ws_tag_delete,
+        ws_image_upload,
+        ws_image_discard,
+    ):
+        websocket_api.async_register_command(hass, command)
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
@@ -64,9 +81,7 @@ def ws_subscribe(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Send all tags and recipes now and again after every change."""
-    store = _get_store(hass)
-    if store is None:
-        connection.send_error(msg["id"], "not_loaded", "Recipe Library is not set up")
+    if _store_or_error(hass, connection, msg) is None:
         return
 
     @callback
@@ -97,20 +112,36 @@ def ws_subscribe(
         vol.Optional("steps"): [cv.string],
         vol.Optional("notes"): cv.string,
         vol.Optional("source"): cv.string,
+        # File name returned by image/upload, or empty for no photo.
+        vol.Optional("image"): cv.string,
     }
 )
-@callback
-def ws_recipe_save(
+@websocket_api.async_response
+async def ws_recipe_save(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Create a recipe or replace the editable fields of an existing one."""
+    if (store := _store_or_error(hass, connection, msg)) is None:
+        return
     fields = {k: v for k, v in msg.items() if k not in ("id", "type", "recipe_id")}
-    _run(
-        hass,
-        connection,
-        msg,
-        lambda store: store.library.save_recipe(fields, msg.get("recipe_id")),
-    )
+    recipe_id = msg.get("recipe_id")
+    try:
+        previous = store.library.get_recipe(recipe_id)["image"] if recipe_id else ""
+        image = check_image_name(fields.get("image"))
+        if (
+            image
+            and image != previous
+            and not await hass.async_add_executor_job(store.images.exists, image)
+        ):
+            raise NotFoundError("image not found")
+        result = store.library.save_recipe(fields, recipe_id)
+    except LibraryError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    store.async_changed()
+    connection.send_result(msg["id"], result)
+    if previous and previous != result["image"]:
+        await store.async_release_image(previous)
 
 
 @websocket_api.websocket_command(
@@ -119,16 +150,22 @@ def ws_recipe_save(
         vol.Required("recipe_id"): cv.string,
     }
 )
-@callback
-def ws_recipe_delete(
+@websocket_api.async_response
+async def ws_recipe_delete(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Delete a recipe."""
-
-    def _delete(store: RecipeStore) -> None:
+    """Delete a recipe and its photo."""
+    if (store := _store_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        image = store.library.get_recipe(msg["recipe_id"])["image"]
         store.library.delete_recipe(msg["recipe_id"])
-
-    _run(hass, connection, msg, _delete)
+    except LibraryError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    store.async_changed()
+    connection.send_result(msg["id"])
+    await store.async_release_image(image)
 
 
 @websocket_api.websocket_command(
@@ -175,3 +212,52 @@ def ws_tag_delete(
         return {"affected": store.library.delete_tag(msg["tag_id"])}
 
     _run(hass, connection, msg, _delete)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/image/upload",
+        # The photo, base64 encoded. The card shrinks it before sending.
+        vol.Required("data"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def ws_image_upload(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Store a photo and return its file name, to be used in recipe/save."""
+    if (store := _store_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        data, extension = await hass.async_add_executor_job(decode_upload, msg["data"])
+        name = await hass.async_add_executor_job(store.images.save, data, extension)
+    except LibraryError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    except OSError:
+        _LOGGER.exception("Could not store the uploaded photo")
+        connection.send_error(msg["id"], "write_failed", "Could not store the photo")
+        return
+    connection.send_result(msg["id"], {"image": name})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/image/discard", vol.Required("image"): cv.string}
+)
+@websocket_api.async_response
+async def ws_image_discard(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Delete an uploaded photo that was not saved with a recipe.
+
+    A photo that a recipe uses is never deleted by this command.
+    """
+    if (store := _store_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        name = check_image_name(msg["image"])
+    except LibraryError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    await store.async_release_image(name)
+    connection.send_result(msg["id"])

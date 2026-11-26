@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.storage import STORAGE_DIR, Store
 
-from .const import SAVE_DELAY, SIGNAL_CHANGED, STORAGE_KEY, STORAGE_VERSION
+from .const import (
+    IMAGE_CLEANUP_MIN_AGE,
+    IMAGES_DIRNAME,
+    SAVE_DELAY,
+    SIGNAL_CHANGED,
+    STORAGE_KEY,
+    STORAGE_VERSION,
+)
+from .images import ImageStore
 from .library import RecipeLibrary
 
 
@@ -22,6 +31,7 @@ class RecipeStore:
             hass, STORAGE_VERSION, STORAGE_KEY, atomic_writes=True
         )
         self.library = RecipeLibrary()
+        self.images = ImageStore(Path(hass.config.path(STORAGE_DIR, IMAGES_DIRNAME)))
 
     async def async_load(self) -> None:
         """Load the library from storage."""
@@ -36,3 +46,22 @@ class RecipeStore:
     async def async_flush(self) -> None:
         """Write the current state immediately (used when unloading)."""
         await self._store.async_save(self.library.as_dict())
+
+    async def async_release_image(self, name: str) -> None:
+        """Delete a photo file if no recipe uses it (any more)."""
+        if name and not self.library.is_image_used(name):
+            await self._hass.async_add_executor_job(self.images.delete, name)
+
+    async def async_cleanup_images(self) -> None:
+        """Delete old photo files that no recipe refers to.
+
+        Skipped for an empty library: if the data file could not be read, an
+        empty library must never lead to deleting all photos.
+        """
+        if not self.library.snapshot()["recipes"]:
+            return
+        await self._hass.async_add_executor_job(
+            self.images.cleanup,
+            self.library.used_images(),
+            IMAGE_CLEANUP_MIN_AGE,
+        )
