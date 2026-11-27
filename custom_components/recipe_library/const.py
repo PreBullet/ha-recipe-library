@@ -22,3 +22,11 @@ CARD_URL = f"/{DOMAIN}/{CARD_FILENAME}"
 IMAGES_DIRNAME = "recipe_library_images"
 IMAGE_URL_BASE = f"/api/{DOMAIN}/image"
 IMAGE_CLEANUP_MIN_AGE = 24 * 60 * 60  # seconds an unused upload is kept
+
+# AI settings (options of the config entry). Each job can use its own AI Task
+# entity; an empty value means the preferred AI Task entity of Home Assistant
+# (Settings > System > AI).
+CONF_AI_TEXT = "ai_text"  # websites and pasted text
+CONF_AI_IMAGE = "ai_image"  # screenshots and photos
+CONF_AI_VIDEO = "ai_video"  # videos
+AI_JOBS = (CONF_AI_TEXT, CONF_AI_IMAGE, CONF_AI_VIDEO)
