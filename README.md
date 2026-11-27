@@ -2,7 +2,7 @@
 
 Simple recipe library for Home Assistant: enter recipes, organise them with your own categories and browse them in a dashboard card. AI-assisted import from websites, YouTube and social media is planned (see the [roadmap](#roadmap)).
 
-> **Status: v0.3.0, stage 1.** Storage, manual entry, photos, categories, search, filter, edit/delete and the dashboard card work. **Import is not available yet.**
+> **Status: v0.3.0, stage 1.** Storage, manual entry, photos, categories, search, filter, edit/delete and the dashboard card work. **Import is not available yet.** The [AI settings](#ai-settings) for the coming import can already be filled in.
 
 ## What it is
 
@@ -80,11 +80,28 @@ Tile and field backgrounds are derived from the text and card colours, the accen
 
 - **Other cards or custom integrations: none.** No HACS frontend card, no `card-mod`, no extra dashboard resource.
 - **Home Assistant components:** `frontend`, `http` and `websocket_api`. They are part of every standard installation and are set up automatically.
+- **AI provider (optional, only for the coming import):** an integration that offers an AI Task entity, for example OpenAI, Google Gemini, Anthropic or Ollama. The library itself, photos and categories do not need it. See [AI settings](#ai-settings).
 - **Python packages:** none.
 - **Network access:** none. Version 0.3.0 does not contact any external service.
 - **Home Assistant version:** 2025.8 or newer. Tested with 2026.2.
 
-When the import arrives (stage 2 and later) it will need an AI provider, and imported content will be sent to the provider you choose. That will be described here before it is released.
+## AI settings
+
+The planned import does not use a fixed AI provider. It uses Home Assistant's [AI Task](https://www.home-assistant.io/integrations/ai_task/), so you decide which provider does which job. You could, for example, let one provider read videos and another one read images.
+
+Open **Settings > Devices & services > Recipe Library > Configure** and choose an AI Task entity per job:
+
+| Job | Meant for |
+| --- | --- |
+| Websites and text | recipes on web pages and pasted text |
+| Images and screenshots | screenshots and photos, for example of a cookbook page |
+| Videos | recipes in videos |
+
+- **Empty field:** the preferred AI Task entity of Home Assistant is used (Settings > System > AI).
+- **Change it any time:** open the form again. The choice is read when an import runs, so no restart or reload is needed.
+- **Requirements:** entities for images and videos have to accept attachments, and whether a provider understands video at all depends on the provider. The list shows every AI Task entity, an entity that cannot do a job is reported when it is used.
+- **Not active yet:** this version has no import. The choice is saved, but nothing uses it until the import is released.
+- **Privacy:** an import sends the imported content (page text, image or video) to the provider behind the entity you chose. The integration itself contacts nothing else.
 
 ## Access, data and privacy
 
@@ -117,8 +134,8 @@ A recipe's `image` field holds a file name; the photo itself is at `/api/recipe_
 ## Roadmap
 
 1. **Library** (this version): storage, manual entry with photo, categories (create, rename, delete), search and filter, edit and delete, dashboard card.
-2. **Website import**: structured recipe data first, AI extraction as fallback.
-3. **YouTube import**: the video is read directly by the AI provider.
+2. **Website import**: structured recipe data first, AI extraction (AI Task) as fallback.
+3. **YouTube import**: uses the AI Task entity chosen for videos. How a video reaches the AI, and which providers can read video, is decided with that stage.
 4. **TikTok and Instagram**: best effort, because downloading these videos is often blocked. Text and image import (pasted caption, screenshot, cookbook photo) is the reliable fallback and also works for any other source.
 
 ## Development
@@ -131,7 +148,8 @@ custom_components/recipe_library/
   images.py          photo checks and files (no Home Assistant imports)
   views.py           HTTP view that serves the photos
   ws_api.py          WebSocket commands used by the card
-  config_flow.py     one-step setup, single instance
+  config_flow.py     one-step setup (single instance) and the AI settings form
+  ai_settings.py     which AI Task entity is chosen for which job (no Home Assistant imports)
   const.py           constants
   manifest.json      integration manifest
   translations/      en, de
@@ -169,7 +187,9 @@ Bewusst nicht enthalten: Essensplaner, Einkaufslisten, Zeitstrahl, Zutaten-Daten
 
 **Design:** Die Karte nutzt ausschließlich Theme-Variablen von Home Assistant und passt sich dem aktiven Theme (hell, dunkel, eigene Themes) automatisch an.
 
-**Abhängigkeiten:** keine zu anderen Karten oder Integrationen, keine Python-Pakete, kein Netzwerkzugriff. Voraussetzung sind nur die Home-Assistant-Bordmittel `frontend`, `http` und `websocket_api`.
+**Abhängigkeiten:** keine zu anderen Karten oder Integrationen, keine Python-Pakete, kein Netzwerkzugriff. Voraussetzung sind nur die Home-Assistant-Bordmittel `frontend`, `http` und `websocket_api`. Nur für den kommenden Import wird optional ein KI-Anbieter mit AI-Task-Entität gebraucht (z. B. OpenAI, Google Gemini, Anthropic oder Ollama).
+
+**KI-Einstellungen:** Der geplante Import nutzt die AI-Task-Funktion von Home Assistant statt eines festen Anbieters. Unter *Einstellungen > Geräte & Dienste > Recipe Library > Konfigurieren* lässt sich pro Aufgabe (Webseiten und Text, Bilder und Screenshots, Videos) eine AI-Task-Entität wählen, zum Beispiel ein Anbieter für Videos und ein anderer für Bilder. Ein leeres Feld nutzt die bevorzugte AI-Task-Entität von Home Assistant. Das Formular lässt sich jederzeit erneut öffnen und ändern, ein Neustart ist nicht nötig. In dieser Version gibt es den Import noch nicht, die Auswahl wird gespeichert, aber noch nicht verwendet. Beim Import werden die Inhalte (Seitentext, Bild, Video) an den Anbieter hinter der gewählten Entität gesendet.
 
 **Fotos:** Im Bearbeiten-Formular lässt sich ein Foto wählen (am Handy Kamera oder Galerie). Es wird schon im Browser verkleinert und neu kodiert, dabei verschwinden Metadaten wie der Aufnahmeort. Achtung: Fotos werden unter einer zufälligen, nicht erratbaren URL **ohne Anmeldung** ausgeliefert (ein Bild-Tag im Browser kann die Home-Assistant-Anmeldung nicht mitsenden, wie bei der Bild-Funktion von Home Assistant selbst). Wer die genaue URL kennt, kann dieses eine Foto öffnen. Bitte keine privaten Bilder hochladen. Löscht man das Foto oder das Rezept, wird die Datei gelöscht.
 
