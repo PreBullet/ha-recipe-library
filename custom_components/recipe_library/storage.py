@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from homeassistant.helpers.storage import STORAGE_DIR, Store
 from .const import (
     IMAGE_CLEANUP_MIN_AGE,
     IMAGES_DIRNAME,
+    MAX_PARALLEL_IMPORTS,
     SAVE_DELAY,
     SIGNAL_CHANGED,
     STORAGE_KEY,
@@ -32,6 +34,8 @@ class RecipeStore:
         )
         self.library = RecipeLibrary()
         self.images = ImageStore(Path(hass.config.path(STORAGE_DIR, IMAGES_DIRNAME)))
+        # At most a few web imports run at the same time.
+        self.import_slots = asyncio.Semaphore(MAX_PARALLEL_IMPORTS)
 
     async def async_load(self) -> None:
         """Load the library from storage."""
