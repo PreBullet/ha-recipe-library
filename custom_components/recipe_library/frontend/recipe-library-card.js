@@ -99,6 +99,24 @@ const STRINGS = {
     uploading: "Uploading…",
     errPhoto: "This image could not be read. Try a JPEG or PNG photo.",
     errTooLarge: "The image is too large.",
+    importRecipe: "Import recipe",
+    importTitle: "Import from a web page",
+    importIntro:
+      "Paste the link of a recipe page. You can check and change the recipe before it is saved.",
+    importUrl: "Link to the recipe",
+    phImportUrl: "https://",
+    importGo: "Import",
+    importing: "Loading…",
+    importNote:
+      "This works with pages that describe their recipe in a structured way, which most recipe sites do. The photo is imported too, if it is available.",
+    importedHint: "Imported from the web. Please check the recipe before you save it.",
+    errImportUrl: "That is not a valid web address.",
+    errImportBlocked: "This address cannot be used. Only public web pages can be imported.",
+    errImportFetch: "The page could not be loaded. It may be unavailable or block automatic access.",
+    errImportLarge: "The page is too large to import.",
+    errImportNotHtml: "This address does not lead to a web page.",
+    errImportNoRecipe:
+      "No recipe was found on this page. For now only pages with structured recipe data can be imported.",
   },
   de: {
     title: "Rezepte",
@@ -175,6 +193,24 @@ const STRINGS = {
     uploading: "Lädt hoch …",
     errPhoto: "Dieses Bild konnte nicht gelesen werden. Versuche ein JPEG- oder PNG-Foto.",
     errTooLarge: "Das Bild ist zu groß.",
+    importRecipe: "Rezept importieren",
+    importTitle: "Von einer Webseite importieren",
+    importIntro:
+      "Füge den Link einer Rezeptseite ein. Das Rezept lässt sich prüfen und ändern, bevor es gespeichert wird.",
+    importUrl: "Link zum Rezept",
+    phImportUrl: "https://",
+    importGo: "Importieren",
+    importing: "Lädt …",
+    importNote:
+      "Das funktioniert bei Seiten, die ihr Rezept strukturiert beschreiben, was die meisten Rezeptseiten tun. Das Foto wird mit übernommen, sofern es verfügbar ist.",
+    importedHint: "Aus dem Web importiert. Bitte das Rezept vor dem Speichern prüfen.",
+    errImportUrl: "Das ist keine gültige Webadresse.",
+    errImportBlocked: "Diese Adresse kann nicht verwendet werden. Es lassen sich nur öffentliche Webseiten importieren.",
+    errImportFetch: "Die Seite konnte nicht geladen werden. Sie ist vielleicht nicht erreichbar oder blockiert automatische Abrufe.",
+    errImportLarge: "Die Seite ist zu groß für den Import.",
+    errImportNotHtml: "Diese Adresse führt nicht zu einer Webseite.",
+    errImportNoRecipe:
+      "Auf dieser Seite wurde kein Rezept gefunden. Bisher lassen sich nur Seiten mit strukturierten Rezeptdaten importieren.",
   },
 };
 
@@ -194,6 +230,7 @@ const ICONS = {
   link: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
   dish: '<path d="M3 13h18a9 9 0 0 1-18 0z"/><path d="M12 4v3M8.5 5.5 9.5 8M15.5 5.5 14.5 8"/>',
+  download: '<path d="M12 4v11M7 11l5 5 5-5M4 20h16"/>',
 };
 
 /** An icon from the constant table above (never built from user content). */
@@ -436,6 +473,7 @@ textarea.field { padding: 12px 16px; line-height: 24px; resize: vertical; min-he
 
 .info { display: flex; gap: 10px; padding: 12px 20px 0; flex: none; font-size: 14px; line-height: 20px; color: var(--rl-muted); }
 .info svg { flex: none; color: var(--rl-accent); margin-top: 1px; }
+.info.inline { padding: 14px 0 0; }
 .rows { display: flex; flex-direction: column; gap: 10px; padding-top: 14px; }
 .row { display: flex; align-items: center; gap: 10px; min-height: 64px; padding: 8px 8px 8px 16px; border-radius: 18px; background: var(--rl-surface); }
 .row .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -485,6 +523,8 @@ class RecipeLibraryCard extends HTMLElement {
     this._filter = new Set();
     this._libScroll = 0;
     this._draft = null;
+    this._import = null; // state of the import view
+    this._importToken = 0; // changes when an import is cancelled or finished
     this._confirm = null;
     this._tagUi = null;
     this._lib = null;
@@ -574,6 +614,18 @@ class RecipeLibraryCard extends HTMLElement {
         return this._t("errNameExists");
       case "limit_reached":
         return this._t("errLimit");
+      case "invalid_url":
+        return this._t("errImportUrl");
+      case "blocked_url":
+        return this._t("errImportBlocked");
+      case "fetch_failed":
+        return this._t("errImportFetch");
+      case "page_too_large":
+        return this._t("errImportLarge");
+      case "not_html":
+        return this._t("errImportNotHtml");
+      case "no_recipe":
+        return this._t("errImportNoRecipe");
       default:
         return this._t("errGeneric");
     }
@@ -653,6 +705,10 @@ class RecipeLibraryCard extends HTMLElement {
     this._view = view;
     this._confirm = null;
     if (view.name !== "tags") this._tagUi = null;
+    if (view.name !== "import") {
+      this._import = null;
+      this._importToken += 1; // an import that is still running is dropped
+    }
     this._render({ resetScroll: true });
   }
 
@@ -678,6 +734,9 @@ class RecipeLibraryCard extends HTMLElement {
         break;
       case "tags":
         nodes = this._buildTags();
+        break;
+      case "import":
+        nodes = this._buildImport();
         break;
       default:
         nodes = this._buildLibrary();
@@ -759,6 +818,7 @@ class RecipeLibraryCard extends HTMLElement {
         "div",
         { class: "top" },
         h("div", { class: "titles" }, h("div", { class: "h1" }, this._title()), lib.subtitle),
+        this._iconButton("download", this._t("importRecipe"), () => this._startImport()),
         this._iconButton("tag", this._t("manageTags"), () => this._go({ name: "tags" })),
       ),
       h("div", { class: "search" }, icon("search", 20), lib.search),
@@ -1064,11 +1124,122 @@ class RecipeLibraryCard extends HTMLElement {
     );
   }
 
+  /* ---- import view ---- */
+
+  _startImport() {
+    this._import = { url: "", busy: false, error: null };
+    this._go({ name: "import" });
+  }
+
+  _buildImport() {
+    const s = this._import;
+    if (!s) {
+      this._view = { name: "library" };
+      return this._buildLibrary();
+    }
+    this._importEls = {
+      input: h("input", {
+        class: "field",
+        id: "rl-import-url",
+        type: "text",
+        inputmode: "url",
+        value: s.url,
+        placeholder: this._t("phImportUrl"),
+        "data-focus-key": "rl-import-url",
+        autocomplete: "off",
+        autocapitalize: "off",
+        spellcheck: "false",
+        enterkeyhint: "go",
+        onInput: (event) => {
+          s.url = event.target.value;
+        },
+        onKeydown: (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            this._runImport();
+          }
+        },
+      }),
+      error: h("div", { class: "error", role: "alert" }),
+      go: h("button", { class: "btn primary", type: "button", onClick: () => this._runImport() }),
+    };
+    const els = this._importEls;
+    const nodes = [
+      h(
+        "div",
+        { class: "top" },
+        this._backButton(this._t("back"), { name: "library" }),
+        h("div", { class: "h1" }, this._t("importTitle")),
+      ),
+      h(
+        "div",
+        { class: "scroll", "data-scroll": "" },
+        h("div", { class: "info inline" }, icon("info", 20), this._t("importIntro")),
+        h("label", { class: "flabel", for: "rl-import-url" }, this._t("importUrl")),
+        els.input,
+        els.error,
+        h("div", { class: "info inline" }, icon("info", 20), this._t("importNote")),
+      ),
+      h(
+        "div",
+        { class: "bar" },
+        h("button", { class: "btn", type: "button", onClick: () => this._go({ name: "library" }) }, this._t("cancel")),
+        els.go,
+      ),
+    ];
+    this._refreshImport();
+    return nodes;
+  }
+
+  _refreshImport() {
+    const s = this._import;
+    const els = this._importEls;
+    if (!s || !els || this._view.name !== "import") return;
+    els.error.textContent = s.error || "";
+    els.input.disabled = s.busy;
+    els.go.disabled = s.busy;
+    els.go.replaceChildren(icon("download", 20, 2.2), s.busy ? this._t("importing") : this._t("importGo"));
+  }
+
+  async _runImport() {
+    const s = this._import;
+    if (!s || s.busy) return;
+    const url = s.url.trim();
+    if (!url) {
+      s.error = this._t("errImportUrl");
+      this._refreshImport();
+      this._importEls.input.focus();
+      return;
+    }
+    const token = ++this._importToken;
+    s.busy = true;
+    s.error = null;
+    this._refreshImport();
+    let draft;
+    try {
+      draft = await this._hass.callWS({ type: `${WS}/import/url`, url });
+    } catch (err) {
+      if (token !== this._importToken) return; // cancelled meanwhile
+      s.busy = false;
+      s.error = this._errorText(err);
+      this._refreshImport();
+      return;
+    }
+    if (token !== this._importToken) {
+      // The view was left while loading: nobody will save the picture.
+      if (draft?.image) this._discardPhoto(draft.image);
+      return;
+    }
+    this._startEdit(draft, { imported: true });
+  }
+
   /* ---- edit view ---- */
 
-  _startEdit(recipe) {
+  _startEdit(recipe, { imported = false } = {}) {
+    const saved = Boolean(recipe) && !imported; // an imported draft is not in the library yet
     this._draft = {
-      id: recipe ? recipe.id : null,
+      id: saved ? recipe.id : null,
+      imported,
       title: recipe?.title ?? "",
       time: recipe?.time ?? "",
       servings: recipe?.servings ?? "",
@@ -1078,7 +1249,7 @@ class RecipeLibraryCard extends HTMLElement {
       notes: recipe?.notes ?? "",
       source: recipe?.source ?? "",
       image: recipe?.image ?? "",
-      originalImage: recipe?.image ?? "",
+      originalImage: saved ? (recipe.image ?? "") : "",
       uploading: false,
       photoError: null,
       saving: false,
@@ -1151,6 +1322,7 @@ class RecipeLibraryCard extends HTMLElement {
       h(
         "div",
         { class: "scroll", "data-scroll": "" },
+        d.imported ? h("div", { class: "info inline" }, icon("info", 20), this._t("importedHint")) : null,
         this._textField("title", this._t("fTitle")),
         h("div", { class: "flabel", id: "rl-photo-label" }, this._t("fPhoto")),
         els.photo,
