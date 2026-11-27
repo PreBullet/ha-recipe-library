@@ -310,13 +310,6 @@ def encoded(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
 
-@pytest.fixture
-def image_dir(hass: HomeAssistant, tmp_path: Path) -> Path:
-    """Keep photo files of a test in a temporary configuration folder."""
-    hass.config.config_dir = str(tmp_path)
-    return tmp_path / ".storage" / "recipe_library_images"
-
-
 async def upload(client, data: bytes = JPEG) -> str:
     """Upload a photo and return its file name."""
     response = await call(client, "image/upload", data=encoded(data))
