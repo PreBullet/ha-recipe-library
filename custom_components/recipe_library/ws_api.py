@@ -21,6 +21,7 @@ from .const import DOMAIN, SIGNAL_CHANGED
 from .images import decode_upload
 from .library import LibraryError, NotFoundError, check_image_name
 from .storage import RecipeStore
+from .web_import import async_import_url
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_tag_delete,
         ws_image_upload,
         ws_image_discard,
+        ws_import_url,
     ):
         websocket_api.async_register_command(hass, command)
 
@@ -261,3 +263,26 @@ async def ws_image_discard(
         return
     await store.async_release_image(name)
     connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/import/url", vol.Required("url"): cv.string}
+)
+@websocket_api.async_response
+async def ws_import_url(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Read a recipe from a web page and return it as a draft (nothing is saved).
+
+    The returned ``image`` is a stored photo that is not used yet: save it with
+    the recipe or release it with ``image/discard``.
+    """
+    if (store := _store_or_error(hass, connection, msg)) is None:
+        return
+    try:
+        async with store.import_slots:
+            draft = await async_import_url(hass, store, msg["url"])
+    except LibraryError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    connection.send_result(msg["id"], draft)

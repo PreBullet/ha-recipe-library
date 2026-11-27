@@ -30,3 +30,6 @@ CONF_AI_TEXT = "ai_text"  # websites and pasted text
 CONF_AI_IMAGE = "ai_image"  # screenshots and photos
 CONF_AI_VIDEO = "ai_video"  # videos
 AI_JOBS = (CONF_AI_TEXT, CONF_AI_IMAGE, CONF_AI_VIDEO)
+
+# Web imports that may run at the same time.
+MAX_PARALLEL_IMPORTS = 2
