@@ -9,5 +9,23 @@
     "abort": {
       "single_instance_allowed": "Recipe Library is already set up. Only one library is possible."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AI settings",
+        "description": "Choose which AI Task entity does which kind of import. Leave a field empty to use the preferred AI Task entity of Home Assistant (Settings > System > AI). The content you import is sent to the provider behind the entity you choose.",
+        "data": {
+          "ai_text": "Websites and text",
+          "ai_image": "Images and screenshots",
+          "ai_video": "Videos"
+        },
+        "data_description": {
+          "ai_text": "Reads recipes from web pages and pasted text. Needs an entity that can generate data.",
+          "ai_image": "Reads recipes from screenshots and photos, for example of a cookbook page. Needs an entity that accepts attachments.",
+          "ai_video": "Reads recipes from videos. Needs an entity that accepts attachments; whether it understands video depends on the provider."
+        }
+      }
+    }
   }
 }

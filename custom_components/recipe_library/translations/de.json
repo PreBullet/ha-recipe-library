@@ -9,5 +9,23 @@
     "abort": {
       "single_instance_allowed": "Die Rezept-Bibliothek ist bereits eingerichtet. Es ist nur eine Bibliothek möglich."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "KI-Einstellungen",
+        "description": "Lege fest, welche AI-Task-Entität welche Art von Import übernimmt. Ein leeres Feld verwendet die bevorzugte AI-Task-Entität von Home Assistant (Einstellungen > System > KI). Die importierten Inhalte werden an den Anbieter gesendet, der hinter der gewählten Entität steht.",
+        "data": {
+          "ai_text": "Webseiten und Text",
+          "ai_image": "Bilder und Screenshots",
+          "ai_video": "Videos"
+        },
+        "data_description": {
+          "ai_text": "Liest Rezepte aus Webseiten und eingefügtem Text. Benötigt eine Entität, die Daten erzeugen kann.",
+          "ai_image": "Liest Rezepte aus Screenshots und Fotos, zum Beispiel von einer Kochbuchseite. Benötigt eine Entität, die Anhänge akzeptiert.",
+          "ai_video": "Liest Rezepte aus Videos. Benötigt eine Entität, die Anhänge akzeptiert; ob sie Video versteht, hängt vom Anbieter ab."
+        }
+      }
+    }
   }
 }
