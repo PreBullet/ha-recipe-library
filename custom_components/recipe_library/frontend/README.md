@@ -21,10 +21,14 @@ Notes for changes:
   again by the card (`image/discard`) or by the server. Image URLs are built
   from `hass.hassUrl` and only for names that match the stored file name
   pattern.
-- Import: the import view sends the address with `recipe_library/import/url` and
+- Add view: the **+** button opens it (view `add`) with the ways to add a recipe:
+  Link (the import, the default), Text or photo (disabled until the AI import
+  exists) and Manual (opens the empty form with `_startEdit(null)`).
+- Import: the add view sends the address with `recipe_library/import/url` and
   opens the returned draft in the edit form with `_startEdit(draft, { imported: true })`.
   The draft's photo is already stored on the server, so leaving the form or the
-  import view (also while it still loads) releases it with `image/discard`.
+  add view (also while it still loads) releases it with `image/discard`. If the
+  draft has no photo, `image_issue` tells the form which hint to show.
 - The card talks to the integration through the WebSocket commands in
   `../ws_api.py`. A change is announced to subscribers before the answer to the
   request arrives, so the data is already current when a request returns.
