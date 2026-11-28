@@ -135,6 +135,26 @@ def check_url(value: str) -> URL:
     return url
 
 
+def _origin(address: str | None) -> str | None:
+    """Return ``https://host/`` for a web address, as a browser sends it.
+
+    Some picture servers only answer requests that come from a page of the
+    same site. Only the origin is sent, never the path or the query.
+    """
+    if not address:
+        return None
+    try:
+        url = URL(address)
+    except ValueError:
+        return None
+    if url.scheme not in ALLOWED_SCHEMES or not url.raw_host:
+        return None
+    # Like a browser: the port only if it is not the usual one.
+    default = 443 if url.scheme == "https" else 80
+    port = f":{url.port}" if url.port not in (None, default) else ""
+    return f"{url.scheme}://{url.raw_host}{port}/"
+
+
 def _is_ip_literal(host: str) -> bool:
     try:
         ipaddress.ip_address(host)
@@ -175,6 +195,7 @@ async def fetch(
     max_bytes: int,
     language: str | None = None,
     timeout: float | None = None,
+    referer: str | None = None,
 ) -> Fetched:
     """Download an address and return the answer.
 
@@ -189,6 +210,8 @@ async def fetch(
     }
     if language and _LANGUAGE_RE.match(language):
         headers["Accept-Language"] = f"{language},en;q=0.7"
+    if origin := _origin(referer):
+        headers["Referer"] = origin
     # A session of its own: the shared one of Home Assistant cannot be given
     # the resolver that refuses non-public addresses. No cookies are kept and
     # no proxy settings of the environment are used.
@@ -254,9 +277,16 @@ async def fetch_page(url: str, language: str | None = None) -> tuple[str, str]:
     return decode_html(answer.body, answer.charset), answer.url
 
 
-async def fetch_image(url: str, language: str | None = None) -> tuple[bytes, str]:
+async def fetch_image(
+    url: str,
+    language: str | None = None,
+    *,
+    referer: str | None = None,
+    timeout: float | None = None,
+) -> tuple[bytes, str]:
     """Download a picture and return ``(bytes, extension)``.
 
+    ``referer`` is the page the picture belongs to (only its origin is sent).
     Only JPEG, PNG and WebP are accepted, judged by the content and not by the
     type the server claims. Raises ``FetchError`` for anything else.
     """
@@ -265,7 +295,8 @@ async def fetch_image(url: str, language: str | None = None) -> tuple[bytes, str
         accept=IMAGE_ACCEPT,
         max_bytes=MAX_IMAGE_BYTES,
         language=language,
-        timeout=TIMEOUT,
+        timeout=timeout or TIMEOUT,
+        referer=referer,
     )
     extension = detect_image_type(answer.body)
     if extension is None:

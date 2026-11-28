@@ -99,8 +99,17 @@ const STRINGS = {
     uploading: "Uploading…",
     errPhoto: "This image could not be read. Try a JPEG or PNG photo.",
     errTooLarge: "The image is too large.",
-    importRecipe: "Import recipe",
-    importTitle: "Import from a web page",
+    modesLabel: "How do you want to add the recipe?",
+    modeLink: "Link",
+    modeText: "Text or photo",
+    modeManual: "Manual",
+    soon: "Soon",
+    soonHint: "Importing from text or a photo follows with the AI import.",
+    pasteLink: "Paste from clipboard",
+    errClipboard: "The clipboard could not be read. Paste the link into the field.",
+    imgNotFound: "No photo was found on the page. You can add one yourself.",
+    imgTooLarge: "The photo on the page is too large to import. You can add one yourself.",
+    imgFailed: "The photo on the page could not be loaded. You can add one yourself.",
     importIntro:
       "Paste the link of a recipe page. You can check and change the recipe before it is saved.",
     importUrl: "Link to the recipe",
@@ -193,8 +202,17 @@ const STRINGS = {
     uploading: "Lädt hoch …",
     errPhoto: "Dieses Bild konnte nicht gelesen werden. Versuche ein JPEG- oder PNG-Foto.",
     errTooLarge: "Das Bild ist zu groß.",
-    importRecipe: "Rezept importieren",
-    importTitle: "Von einer Webseite importieren",
+    modesLabel: "Wie möchtest du das Rezept hinzufügen?",
+    modeLink: "Link",
+    modeText: "Text oder Bild",
+    modeManual: "Manuell",
+    soon: "Bald",
+    soonHint: "Der Import aus Text oder Bild folgt mit dem KI-Import.",
+    pasteLink: "Aus der Zwischenablage einfügen",
+    errClipboard: "Die Zwischenablage konnte nicht gelesen werden. Füge den Link direkt ins Feld ein.",
+    imgNotFound: "Auf der Seite wurde kein Foto gefunden. Du kannst selbst eines hinzufügen.",
+    imgTooLarge: "Das Foto der Seite ist zu groß für den Import. Du kannst selbst eines hinzufügen.",
+    imgFailed: "Das Foto der Seite konnte nicht geladen werden. Du kannst selbst eines hinzufügen.",
     importIntro:
       "Füge den Link einer Rezeptseite ein. Das Rezept lässt sich prüfen und ändern, bevor es gespeichert wird.",
     importUrl: "Link zum Rezept",
@@ -231,6 +249,7 @@ const ICONS = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
   dish: '<path d="M3 13h18a9 9 0 0 1-18 0z"/><path d="M12 4v3M8.5 5.5 9.5 8M15.5 5.5 14.5 8"/>',
   download: '<path d="M12 4v11M7 11l5 5 5-5M4 20h16"/>',
+  paste: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4h6v3H9z"/>',
 };
 
 /** An icon from the constant table above (never built from user content). */
@@ -242,6 +261,13 @@ function icon(name, size = 22, width = 2) {
     `stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
   return template.content.firstChild;
 }
+
+// Why an imported recipe has no photo (as reported by the server) -> text.
+const ISSUE_TEXTS = {
+  not_found: "imgNotFound",
+  too_large: "imgTooLarge",
+  download_failed: "imgFailed",
+};
 
 const PROPS = new Set(["value", "disabled", "type", "placeholder", "rows", "id"]);
 
@@ -405,6 +431,11 @@ textarea.field { padding: 12px 16px; line-height: 24px; resize: vertical; min-he
   background: var(--rl-surface); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
 }
 .chip[aria-pressed="true"] { background: var(--rl-accent); color: var(--rl-on-accent); font-weight: 500; padding-left: 14px; }
+.chip[disabled] { opacity: 0.6; cursor: default; }
+.badge { padding: 0 8px; border: 1px solid var(--rl-line); border-radius: 999px; font-size: 11px; line-height: 16px; color: var(--rl-muted); }
+.input-wrap { position: relative; margin-top: 8px; }
+.input-wrap .field { padding-right: 56px; }
+.input-btn { position: absolute; right: 2px; top: 2px; background: transparent; }
 .chip.dashed { background: transparent; border: 1.5px dashed var(--rl-line); color: var(--rl-muted); padding-left: 14px; }
 .wrap { flex-wrap: wrap; overflow: visible; padding: 8px 0 0; }
 
@@ -523,7 +554,7 @@ class RecipeLibraryCard extends HTMLElement {
     this._filter = new Set();
     this._libScroll = 0;
     this._draft = null;
-    this._import = null; // state of the import view
+    this._add = null; // state of the add view
     this._importToken = 0; // changes when an import is cancelled or finished
     this._confirm = null;
     this._tagUi = null;
@@ -705,8 +736,8 @@ class RecipeLibraryCard extends HTMLElement {
     this._view = view;
     this._confirm = null;
     if (view.name !== "tags") this._tagUi = null;
-    if (view.name !== "import") {
-      this._import = null;
+    if (view.name !== "add") {
+      this._add = null;
       this._importToken += 1; // an import that is still running is dropped
     }
     this._render({ resetScroll: true });
@@ -735,8 +766,8 @@ class RecipeLibraryCard extends HTMLElement {
       case "tags":
         nodes = this._buildTags();
         break;
-      case "import":
-        nodes = this._buildImport();
+      case "add":
+        nodes = this._buildAdd();
         break;
       default:
         nodes = this._buildLibrary();
@@ -818,7 +849,6 @@ class RecipeLibraryCard extends HTMLElement {
         "div",
         { class: "top" },
         h("div", { class: "titles" }, h("div", { class: "h1" }, this._title()), lib.subtitle),
-        this._iconButton("download", this._t("importRecipe"), () => this._startImport()),
         this._iconButton("tag", this._t("manageTags"), () => this._go({ name: "tags" })),
       ),
       h("div", { class: "search" }, icon("search", 20), lib.search),
@@ -831,7 +861,7 @@ class RecipeLibraryCard extends HTMLElement {
           class: "fab",
           type: "button",
           "aria-label": this._t("addRecipe"),
-          onClick: () => this._startEdit(null),
+          onClick: () => this._startAdd(),
         },
         icon("plus", 26),
       ),
@@ -1124,20 +1154,20 @@ class RecipeLibraryCard extends HTMLElement {
     );
   }
 
-  /* ---- import view ---- */
+  /* ---- add view: choose how to add a recipe ---- */
 
-  _startImport() {
-    this._import = { url: "", busy: false, error: null };
-    this._go({ name: "import" });
+  _startAdd() {
+    this._add = { url: "", busy: false, error: null };
+    this._go({ name: "add" });
   }
 
-  _buildImport() {
-    const s = this._import;
+  _buildAdd() {
+    const s = this._add;
     if (!s) {
       this._view = { name: "library" };
       return this._buildLibrary();
     }
-    this._importEls = {
+    this._addEls = {
       input: h("input", {
         class: "field",
         id: "rl-import-url",
@@ -1163,21 +1193,54 @@ class RecipeLibraryCard extends HTMLElement {
       error: h("div", { class: "error", role: "alert" }),
       go: h("button", { class: "btn primary", type: "button", onClick: () => this._runImport() }),
     };
-    const els = this._importEls;
+    const els = this._addEls;
+    const canPaste = typeof navigator.clipboard?.readText === "function";
     const nodes = [
       h(
         "div",
         { class: "top" },
         this._backButton(this._t("back"), { name: "library" }),
-        h("div", { class: "h1" }, this._t("importTitle")),
+        h("div", { class: "h1" }, this._t("addRecipe")),
+      ),
+      h(
+        "div",
+        { class: "chips", role: "group", "aria-label": this._t("modesLabel") },
+        h("button", { class: "chip", type: "button", "aria-pressed": "true" }, icon("check", 18, 2.4), this._t("modeLink")),
+        h(
+          "button",
+          { class: "chip", type: "button", disabled: true, "aria-pressed": "false", title: this._t("soonHint") },
+          this._t("modeText"),
+          h("span", { class: "badge" }, this._t("soon")),
+        ),
+        h(
+          "button",
+          { class: "chip", type: "button", "aria-pressed": "false", onClick: () => this._startEdit(null) },
+          this._t("modeManual"),
+        ),
       ),
       h(
         "div",
         { class: "scroll", "data-scroll": "" },
-        h("div", { class: "info inline" }, icon("info", 20), this._t("importIntro")),
         h("label", { class: "flabel", for: "rl-import-url" }, this._t("importUrl")),
-        els.input,
+        h(
+          "div",
+          { class: "input-wrap" },
+          els.input,
+          canPaste
+            ? h(
+                "button",
+                {
+                  class: "icon-btn input-btn",
+                  type: "button",
+                  "aria-label": this._t("pasteLink"),
+                  onClick: () => this._pasteLink(),
+                },
+                icon("paste", 20),
+              )
+            : null,
+        ),
         els.error,
+        h("div", { class: "info inline" }, icon("info", 20), this._t("importIntro")),
         h("div", { class: "info inline" }, icon("info", 20), this._t("importNote")),
       ),
       h(
@@ -1187,34 +1250,51 @@ class RecipeLibraryCard extends HTMLElement {
         els.go,
       ),
     ];
-    this._refreshImport();
+    this._refreshAdd();
     return nodes;
   }
 
-  _refreshImport() {
-    const s = this._import;
-    const els = this._importEls;
-    if (!s || !els || this._view.name !== "import") return;
+  _refreshAdd() {
+    const s = this._add;
+    const els = this._addEls;
+    if (!s || !els || this._view.name !== "add") return;
     els.error.textContent = s.error || "";
     els.input.disabled = s.busy;
     els.go.disabled = s.busy;
     els.go.replaceChildren(icon("download", 20, 2.2), s.busy ? this._t("importing") : this._t("importGo"));
   }
 
+  async _pasteLink() {
+    const s = this._add;
+    if (!s || s.busy) return;
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (!text || this._add !== s) return;
+      s.url = text;
+      s.error = null;
+      this._addEls.input.value = text;
+    } catch (_err) {
+      // No permission, or a browser that does not allow reading the clipboard.
+      if (this._add !== s) return;
+      s.error = this._t("errClipboard");
+    }
+    this._refreshAdd();
+  }
+
   async _runImport() {
-    const s = this._import;
+    const s = this._add;
     if (!s || s.busy) return;
     const url = s.url.trim();
     if (!url) {
       s.error = this._t("errImportUrl");
-      this._refreshImport();
-      this._importEls.input.focus();
+      this._refreshAdd();
+      this._addEls.input.focus();
       return;
     }
     const token = ++this._importToken;
     s.busy = true;
     s.error = null;
-    this._refreshImport();
+    this._refreshAdd();
     let draft;
     try {
       draft = await this._hass.callWS({ type: `${WS}/import/url`, url });
@@ -1222,7 +1302,7 @@ class RecipeLibraryCard extends HTMLElement {
       if (token !== this._importToken) return; // cancelled meanwhile
       s.busy = false;
       s.error = this._errorText(err);
-      this._refreshImport();
+      this._refreshAdd();
       return;
     }
     if (token !== this._importToken) {
@@ -1249,6 +1329,7 @@ class RecipeLibraryCard extends HTMLElement {
       notes: recipe?.notes ?? "",
       source: recipe?.source ?? "",
       image: recipe?.image ?? "",
+      imageIssue: imported ? (recipe?.image_issue ?? "") : "",
       originalImage: saved ? (recipe.image ?? "") : "",
       uploading: false,
       photoError: null,
@@ -1397,9 +1478,11 @@ class RecipeLibraryCard extends HTMLElement {
           )
         : null,
     );
+    const issue = !d.image && ISSUE_TEXTS[d.imageIssue];
     this._swap(els.photo, [
       box,
       actions,
+      issue ? h("div", { class: "info inline" }, icon("info", 20), this._t(issue)) : null,
       d.photoError ? h("div", { class: "error", role: "alert" }, d.photoError) : null,
     ]);
   }
@@ -1434,6 +1517,7 @@ class RecipeLibraryCard extends HTMLElement {
     if (uploaded) {
       this._discardNewPhoto(); // an earlier, unsaved upload of this form
       d.image = uploaded;
+      d.imageIssue = "";
     }
     this._refreshPhoto();
     this._refreshSaveState();
@@ -1444,6 +1528,7 @@ class RecipeLibraryCard extends HTMLElement {
     if (!d) return;
     this._discardNewPhoto();
     d.image = "";
+    d.imageIssue = "";
     d.photoError = null;
     this._refreshPhoto();
   }

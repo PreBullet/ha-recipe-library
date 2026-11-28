@@ -2,7 +2,7 @@
 
 Simple recipe library for Home Assistant: enter recipes, organise them with your own categories and browse them in a dashboard card. Recipes can be imported from web pages. AI-assisted import for YouTube, social media, screenshots and photos is planned (see the [roadmap](#roadmap)).
 
-> **Status: v0.4.0.** Storage, manual entry, photos, categories, search, filter, edit/delete, the dashboard card and the [import from web pages](#import-from-a-web-page) with structured recipe data work. **AI-based import (pages without structured data, text, screenshots, YouTube) is not available yet.** The [AI settings](#ai-settings) for it can already be filled in.
+> **Status: v0.4.1.** Storage, manual entry, photos, categories, search, filter, edit/delete, the dashboard card and the [import from web pages](#import-from-a-web-page) with structured recipe data work. **AI-based import (pages without structured data, text, screenshots, YouTube) is not available yet.** The [AI settings](#ai-settings) for it can already be filled in.
 
 ## What it is
 
@@ -62,8 +62,7 @@ The card is available in English and German and uses your Home Assistant languag
 
 ## Using the library
 
-- **Add**: tap **+**. Only the title is required.
-- **Import**: tap the import button in the header, see [Import from a web page](#import-from-a-web-page).
+- **Add**: tap **+**. The next screen offers the ways to add a recipe: **Link** (import from a web page, see [Import from a web page](#import-from-a-web-page)), **Manual** (the empty form, only the title is required) and **Text or photo**, which is marked *Soon* and arrives with the AI import.
 - **Photo**: in the edit form tap **Choose photo** (on a phone this offers the camera or the gallery). The photo is shrunk in your browser before it is uploaded, so large camera pictures are fine. Use **Change photo** or **Remove photo** later. Recipes without a photo show a neutral placeholder.
 - **Filter**: tap one or more category chips. A recipe has to match **all** selected categories. **All** clears the filter.
 - **Search**: finds text in the title, ingredients, notes and category names, together with the selected filters.
@@ -89,9 +88,11 @@ Tile and field backgrounds are derived from the text and card colours, the accen
 
 ## Import from a web page
 
-Tap the import button (arrow into a tray) in the header of the card, paste the link of a recipe page and tap **Import**. The recipe opens in the edit form so you can check and change it. **Nothing is saved until you press Save**, and cancelling throws the draft away, including its photo.
+Tap **+**, stay on **Link**, paste the link of a recipe page (the button in the field pastes from the clipboard where the browser allows it) and tap **Import**. The recipe opens in the edit form so you can check and change it. **Nothing is saved until you press Save**, and cancelling throws the draft away, including its photo.
 
 What is taken over: the title, the time (total time, or preparation plus cooking time), the servings, the ingredients, the instructions, the description (as notes), the address as source and the main photo. Categories are not set, choose them while you check the recipe.
+
+**The photo.** It is taken from the recipe data of the page, and if that does not work out, from the preview picture of the page (the `og:image` that sites name for sharing). Up to four addresses are tried one after the other, within 20 seconds in total, and the picture is requested like a browser would do it, with the site of the page as origin (only its host name, never the path), because some picture servers only answer then. If there is still no photo, the edit form says why (no photo on the page, too large, could not be loaded) and you can choose a photo yourself.
 
 **How it works.** Most recipe sites describe their recipes in a structured way for search engines (schema.org `Recipe` data in a `<script type="application/ld+json">` block). The import reads exactly that. **No AI is used**, so no provider is needed and nothing leaves your Home Assistant except the request for the page.
 
@@ -99,7 +100,7 @@ What is taken over: the title, the time (total time, or preparation plus cooking
 
 - Pages without structured recipe data, pages that only show the recipe after JavaScript has run, and pages that block automated access. You get a message; the AI-based import for such pages is planned.
 - Pages that only use the older microdata format.
-- Photos that are not JPEG, PNG or WebP, or larger than 2 MB. The recipe is imported without a photo then.
+- Photos that are not JPEG, PNG or WebP (for example AVIF), or larger than 2 MB. The recipe is imported without a photo then and the form tells you.
 - Pages in your own network (see below).
 
 **Safety.** The Home Assistant server loads the address, and every signed-in user can trigger that. To keep it from being misused to reach other devices in your network, only public web pages are loaded:
@@ -156,7 +157,7 @@ For other cards or scripts. All commands need an authenticated Home Assistant We
 | `recipe_library/tag/delete`      | `tag_id`                                                                                     | `{affected: <number of recipes>}`       |
 | `recipe_library/image/upload`    | `data` (base64 of a JPEG, PNG or WebP, at most 2 MB)                                          | `{image: <file name>}`, to be used in `recipe/save` |
 | `recipe_library/image/discard`   | `image` (file name)                                                                          | Deletes an uploaded photo that no recipe uses |
-| `recipe_library/import/url`      | `url` (address of a web page)                                                                | A draft `{title, time, servings, ingredients, steps, notes, source, image}`. Nothing is saved; `image` is a stored photo that no recipe uses yet, so use it in `recipe/save` or release it with `image/discard` |
+| `recipe_library/import/url`      | `url` (address of a web page)                                                                | A draft `{title, time, servings, ingredients, steps, notes, source, image, image_issue}`. Nothing is saved; `image` is a stored photo that no recipe uses yet, so use it in `recipe/save` or release it with `image/discard`. `image_issue` is empty if there is a photo, otherwise `not_found`, `too_large` or `download_failed`; leave it out when you save the draft |
 
 A recipe's `image` field holds a file name; the photo itself is at `/api/recipe_library/image/<file name>`. Errors use the codes `invalid_format`, `not_found`, `name_exists`, `limit_reached` and `image_too_large`, and for the import `invalid_url`, `blocked_url`, `fetch_failed`, `page_too_large`, `not_html` and `no_recipe`.
 
@@ -222,7 +223,9 @@ Bewusst nicht enthalten: Essensplaner, Einkaufslisten, Zeitstrahl, Zutaten-Daten
 
 **Abhängigkeiten:** keine zu anderen Karten oder Integrationen, keine Python-Pakete, Netzwerkzugriff nur beim Import (die eingegebene Webseite und ihr Foto). Voraussetzung sind nur die Home-Assistant-Bordmittel `frontend`, `http` und `websocket_api`. Nur für den kommenden KI-Import wird optional ein KI-Anbieter mit AI-Task-Entität gebraucht (z. B. OpenAI, Google Gemini, Anthropic oder Ollama).
 
-**Import von Webseiten:** Über den Import-Knopf im Kartenkopf einen Link einfügen. Das Rezept öffnet sich zum Prüfen im Bearbeiten-Formular und wird erst mit *Speichern* abgelegt. Gelesen werden die strukturierten Rezeptdaten (schema.org, JSON-LD), die die meisten Rezeptseiten für Suchmaschinen bereitstellen. Es wird **keine KI** benötigt. Nicht unterstützt: Seiten ohne solche Daten, Seiten die das Rezept erst per JavaScript anzeigen oder automatische Abrufe blockieren, und Seiten im eigenen Netzwerk. Zum Schutz lädt der Home-Assistant-Server nur öffentliche Webseiten (nur http/https auf den Standardports, keine Adressen im eigenen Netzwerk oder von Home Assistant selbst, auch nicht über Weiterleitungen oder Hostnamen, Größen- und Zeitlimits). Das Foto der Seite wird mit übernommen, sofern es JPEG, PNG oder WebP bis 2 MB ist.
+**Rezept hinzufügen:** Das Plus öffnet die Auswahl *Link* (Import von einer Webseite), *Manuell* (leeres Formular) und *Text oder Bild* (als *Bald* markiert, kommt mit dem KI-Import).
+
+**Import von Webseiten:** Unter *Link* die Adresse einfügen (der Knopf im Feld fügt aus der Zwischenablage ein, wo der Browser das erlaubt). Das Rezept öffnet sich zum Prüfen im Bearbeiten-Formular und wird erst mit *Speichern* abgelegt. Gelesen werden die strukturierten Rezeptdaten (schema.org, JSON-LD), die die meisten Rezeptseiten für Suchmaschinen bereitstellen. Es wird **keine KI** benötigt. Nicht unterstützt: Seiten ohne solche Daten, Seiten die das Rezept erst per JavaScript anzeigen oder automatische Abrufe blockieren, und Seiten im eigenen Netzwerk. Zum Schutz lädt der Home-Assistant-Server nur öffentliche Webseiten (nur http/https auf den Standardports, keine Adressen im eigenen Netzwerk oder von Home Assistant selbst, auch nicht über Weiterleitungen oder Hostnamen, Größen- und Zeitlimits). Das Foto der Seite wird mit übernommen, sofern es JPEG, PNG oder WebP bis 2 MB ist. Es wird aus den Rezeptdaten gelesen, ersatzweise aus dem Vorschaubild der Seite (`og:image`). Fehlt es trotzdem, nennt das Formular den Grund, und das Foto lässt sich selbst wählen.
 
 **KI-Einstellungen:** Der geplante KI-Import nutzt die AI-Task-Funktion von Home Assistant statt eines festen Anbieters. Unter *Einstellungen > Geräte & Dienste > Recipe Library > Konfigurieren* lässt sich pro Aufgabe (Webseiten und Text, Bilder und Screenshots, Videos) eine AI-Task-Entität wählen, zum Beispiel ein Anbieter für Videos und ein anderer für Bilder. Ein leeres Feld nutzt die bevorzugte AI-Task-Entität von Home Assistant. Das Formular lässt sich jederzeit erneut öffnen und ändern, ein Neustart ist nicht nötig. Der Import von Webseiten mit strukturierten Daten braucht keine KI. Die Auswahl wird gespeichert und vom KI-Import verwendet, sobald er erscheint. Beim KI-Import werden die Inhalte (Seitentext, Bild, Video) an den Anbieter hinter der gewählten Entität gesendet.
 

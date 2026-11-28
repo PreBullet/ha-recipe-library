@@ -28,6 +28,12 @@ from .library import (
 _MAX_JSON_BLOCKS = 50
 _MAX_NODES = 20000
 _MAX_DEPTH = 12
+# Pictures that are tried one after the other: some from the recipe data, some
+# from the preview picture of the page (Open Graph and similar).
+_MAX_DATA_PICTURES = 2
+_MAX_PAGE_PICTURES = 2
+_MAX_HEAD = 1_000_000  # characters of the page that are searched for meta tags
+_MAX_META_TAGS = 300
 
 
 class NoRecipeError(LibraryError):
@@ -48,6 +54,19 @@ _LINE_BREAK_TAG_RE = re.compile(
     r"<\s*br\s*/?\s*>|<\s*/\s*(?:p|li|div|h[1-6])\s*>", re.I
 )
 _TAG_RE = re.compile(r"</?[a-zA-Z][^<>]*>")
+_META_TAG_RE = re.compile(r"<(?:meta|link)\b[^>]*>", re.IGNORECASE)
+_ATTRIBUTE_RE = re.compile(
+    r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>]+))"
+)
+# Keys of the preview picture of a page, most reliable first.
+_PAGE_PICTURE_KEYS = (
+    "og:image",
+    "og:image:secure_url",
+    "og:image:url",
+    "twitter:image",
+    "twitter:image:src",
+    "image_src",  # <link rel="image_src" href="...">
+)
 _DURATION_RE = re.compile(
     r"^P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$",
     re.IGNORECASE,
@@ -118,9 +137,16 @@ def _is_recipe(node: dict[str, Any]) -> bool:
     return False
 
 
-def _recipe_nodes(blocks: list[Any]) -> list[dict[str, Any]]:
-    """Find all Recipe objects anywhere in the JSON-LD blocks."""
+def _walk(
+    blocks: list[Any],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Find all Recipe objects anywhere in the JSON-LD blocks.
+
+    Also returns the objects by their ``@id``, because a recipe may only point
+    to its picture (``{"@id": "#photo"}``) instead of describing it.
+    """
     found: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
     budget = _MAX_NODES
     stack: list[tuple[Any, int]] = [(block, 0) for block in reversed(blocks)]
     while stack and budget > 0:
@@ -131,6 +157,8 @@ def _recipe_nodes(blocks: list[Any]) -> list[dict[str, Any]]:
         if isinstance(node, dict):
             if _is_recipe(node):
                 found.append(node)
+            if isinstance(node.get("@id"), str):
+                by_id.setdefault(node["@id"], node)
             children = list(node.values())
         elif isinstance(node, list):
             children = node
@@ -138,7 +166,7 @@ def _recipe_nodes(blocks: list[Any]) -> list[dict[str, Any]]:
             continue
         # Reversed, so that the first entry of the page is handled first.
         stack.extend((child, depth + 1) for child in reversed(children))
-    return found
+    return found, by_id
 
 
 # -- field conversion
@@ -227,24 +255,107 @@ def _steps(recipe: dict[str, Any]) -> list[str]:
     ]
 
 
-def _image_url(recipe: dict[str, Any], page_url: str) -> str:
-    """Return the absolute URL of the first image, or an empty string."""
-    candidates = [recipe.get("image"), recipe.get("thumbnailUrl")]
-    for candidate in candidates:
-        for item in _as_list(candidate):
-            url = item.get("url") if isinstance(item, dict) else item
-            if not isinstance(url, str) or not url.strip():
-                continue
-            absolute = urljoin(page_url, url.strip())
-            if (
-                absolute.lower().startswith(("http://", "https://"))
-                and len(absolute) <= MAX_SOURCE
-            ):
-                return absolute
+def _absolute_url(value: Any, page_url: str) -> str:
+    """Return a picture address as an absolute web address, or an empty string."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    absolute = urljoin(page_url, value.strip())
+    if (
+        absolute.lower().startswith(("http://", "https://"))
+        and len(absolute) <= MAX_SOURCE
+    ):
+        return absolute
     return ""
 
 
-def _draft(recipe: dict[str, Any], page_url: str) -> dict[str, Any] | None:
+def _picture_references(
+    value: Any, by_id: dict[str, dict[str, Any]], depth: int = 0
+) -> list[str]:
+    """Return the addresses in an ``image`` value, whatever shape it has.
+
+    Sites write a text, a list, an ``ImageObject`` with ``url`` or
+    ``contentUrl``, or only point to an object defined elsewhere in the page.
+    """
+    if depth > 4:
+        return []
+    found: list[str] = []
+    for item in _as_list(value):
+        if isinstance(item, str):
+            found.append(item)
+        elif isinstance(item, dict):
+            node = item
+            if not ("url" in item or "contentUrl" in item):
+                reference = item.get("@id")
+                node = (
+                    by_id.get(reference, item) if isinstance(reference, str) else item
+                )
+            for key in ("url", "contentUrl"):
+                found.extend(_picture_references(node.get(key), by_id, depth + 1))
+    return found
+
+
+def _attributes(tag: str) -> dict[str, str]:
+    """Return the attributes of an HTML tag with lower case names."""
+    return {
+        match.group(1).lower(): html.unescape(
+            next(group for group in match.groups()[1:] if group is not None)
+        )
+        for match in _ATTRIBUTE_RE.finditer(tag)
+    }
+
+
+def _page_pictures(page: str) -> list[str]:
+    """Return the preview pictures a page names in its meta tags."""
+    by_key: dict[str, list[str]] = {}
+    for tag in _META_TAG_RE.findall(page[:_MAX_HEAD])[:_MAX_META_TAGS]:
+        attributes = _attributes(tag)
+        if tag[:5].lower() == "<meta":
+            key = (attributes.get("property") or attributes.get("name") or "").lower()
+            value = attributes.get("content", "")
+        else:
+            key = (
+                "image_src" if attributes.get("rel", "").lower() == "image_src" else ""
+            )
+            value = attributes.get("href", "")
+        if key in _PAGE_PICTURE_KEYS and value.strip():
+            by_key.setdefault(key, []).append(value)
+    return [value for key in _PAGE_PICTURE_KEYS for value in by_key.get(key, [])]
+
+
+def _picture_urls(
+    recipe: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    page_url: str,
+    page_pictures: list[str],
+) -> list[str]:
+    """Return absolute picture addresses to try, the most likely one first."""
+    from_data = [
+        reference
+        for key in ("image", "thumbnailUrl")
+        for reference in _picture_references(recipe.get(key), by_id)
+    ]
+    urls: list[str] = []
+    for candidates, limit in (
+        (from_data, _MAX_DATA_PICTURES),
+        (page_pictures, _MAX_PAGE_PICTURES),
+    ):
+        taken = 0
+        for candidate in candidates:
+            absolute = _absolute_url(candidate, page_url)
+            if absolute and absolute not in urls:
+                urls.append(absolute)
+                taken += 1
+                if taken >= limit:
+                    break
+    return urls
+
+
+def _draft(
+    recipe: dict[str, Any],
+    page_url: str,
+    by_id: dict[str, dict[str, Any]],
+    page_pictures: list[str],
+) -> dict[str, Any] | None:
     title = _clip(_one_line(recipe.get("name")), MAX_TITLE)
     ingredients = _ingredients(recipe)
     steps = _steps(recipe)
@@ -259,7 +370,7 @@ def _draft(recipe: dict[str, Any], page_url: str) -> dict[str, Any] | None:
         "steps": steps,
         "notes": _clip(description, MAX_NOTES),
         "source": page_url if len(page_url) <= MAX_SOURCE else "",
-        "image_url": _image_url(recipe, page_url),
+        "image_urls": _picture_urls(recipe, by_id, page_url, page_pictures),
     }
 
 
@@ -267,9 +378,12 @@ def parse_recipe(page: str, page_url: str) -> dict[str, Any]:
     """Return a recipe draft from a page, or raise NoRecipeError.
 
     The draft has the fields of a recipe (without tags and photo) plus
-    ``image_url``, the address of the picture on the page.
+    ``image_urls``: the addresses of pictures to try, most likely one first
+    (empty if the page has none).
     """
-    for recipe in _recipe_nodes(_json_blocks(page)):
-        if draft := _draft(recipe, page_url):
+    recipes, by_id = _walk(_json_blocks(page))
+    page_pictures = _page_pictures(page) if recipes else []
+    for recipe in recipes:
+        if draft := _draft(recipe, page_url, by_id, page_pictures):
             return draft
     raise NoRecipeError("the page has no structured recipe data")

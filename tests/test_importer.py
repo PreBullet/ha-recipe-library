@@ -69,14 +69,14 @@ def test_reads_all_fields() -> None:
         "steps": ["Boil the pasta.", "Add the sauce."],
         "notes": "Quick and simple.",
         "source": URL,
-        "image_url": "https://recipes.example/img/pasta.jpg",
+        "image_urls": ["https://recipes.example/img/pasta.jpg"],
     }
 
 
 def test_a_draft_can_be_saved_as_a_recipe() -> None:
     """The card saves the draft as it is, so it must always be valid."""
     draft = parse(recipe(totalTime="PT1H", recipeYield=["4", "4 servings"]))
-    fields = {k: v for k, v in draft.items() if k != "image_url"}
+    fields = {k: v for k, v in draft.items() if k != "image_urls"}
 
     saved = RecipeLibrary().save_recipe(fields)
 
@@ -332,12 +332,150 @@ def test_servings(value: Any, expected: str) -> None:
     ],
 )
 def test_image_url(image: Any, expected: str) -> None:
-    assert parse(recipe(image=image))["image_url"] == expected
+    urls = parse(recipe(image=image))["image_urls"]
+    assert urls[:1] == ([expected] if expected else [])
 
 
 def test_thumbnail_is_used_when_there_is_no_image() -> None:
     draft = parse(recipe(thumbnailUrl="https://cdn.example/t.jpg"))
-    assert draft["image_url"] == "https://cdn.example/t.jpg"
+    assert draft["image_urls"] == ["https://cdn.example/t.jpg"]
+
+
+def test_content_url_is_used_when_an_image_object_has_no_url() -> None:
+    image = {"@type": "ImageObject", "contentUrl": "https://cdn.example/c.jpg"}
+    assert parse(recipe(image=image))["image_urls"] == ["https://cdn.example/c.jpg"]
+
+
+def test_a_reference_to_an_image_object_elsewhere_in_the_page() -> None:
+    graph = {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "ImageObject",
+                "@id": "https://recipes.example/pasta/#photo",
+                "url": "https://cdn.example/photo.jpg",
+            },
+            recipe(image={"@id": "https://recipes.example/pasta/#photo"}),
+        ],
+    }
+    assert parse(graph)["image_urls"] == ["https://cdn.example/photo.jpg"]
+
+
+def test_a_reference_that_leads_nowhere_gives_no_picture() -> None:
+    draft = parse(recipe(image={"@id": "#missing"}))
+    assert draft["image_urls"] == []
+
+
+def test_a_reference_cycle_does_not_hang() -> None:
+    a: dict[str, Any] = {"@id": "#a", "@type": "ImageObject"}
+    a["url"] = {"@id": "#a"}
+    graph = {"@graph": [a, recipe(image={"@id": "#a"})]}
+    assert parse(graph)["image_urls"] == []
+
+
+def test_several_pictures_are_tried_in_order_without_duplicates() -> None:
+    image = [
+        "https://cdn.example/a.jpg",
+        "https://cdn.example/a.jpg",
+        "https://cdn.example/b.jpg",
+        "https://cdn.example/c.jpg",
+    ]
+    # Two from the recipe data, the rest is left out.
+    assert parse(recipe(image=image))["image_urls"] == [
+        "https://cdn.example/a.jpg",
+        "https://cdn.example/b.jpg",
+    ]
+
+
+# -- the preview picture of the page
+
+
+def with_meta(meta: str, *blocks: Any) -> str:
+    return page(*blocks).replace("<title>", f"{meta}<title>")
+
+
+def test_the_preview_picture_is_used_when_the_data_has_none() -> None:
+    markup = with_meta(
+        '<meta property="og:image" content="https://cdn.example/og.jpg">', recipe()
+    )
+    assert parse_recipe(markup, URL)["image_urls"] == ["https://cdn.example/og.jpg"]
+
+
+def test_the_preview_picture_follows_the_pictures_of_the_data() -> None:
+    markup = with_meta(
+        '<meta property="og:image" content="https://cdn.example/og.jpg">',
+        recipe(image="https://cdn.example/data.jpg"),
+    )
+    assert parse_recipe(markup, URL)["image_urls"] == [
+        "https://cdn.example/data.jpg",
+        "https://cdn.example/og.jpg",
+    ]
+
+
+def test_the_same_picture_in_data_and_preview_is_listed_once() -> None:
+    markup = with_meta(
+        '<meta property="og:image" content="https://cdn.example/same.jpg">',
+        recipe(image="https://cdn.example/same.jpg"),
+    )
+    assert parse_recipe(markup, URL)["image_urls"] == ["https://cdn.example/same.jpg"]
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        '<meta property="og:image" content="https://cdn.example/og.jpg">',
+        "<meta property='og:image' content='https://cdn.example/og.jpg'>",
+        '<META PROPERTY="OG:IMAGE" CONTENT="https://cdn.example/og.jpg" />',
+        '<meta content="https://cdn.example/og.jpg" property="og:image"/>',
+        '<meta name="og:image" content="https://cdn.example/og.jpg">',
+        '<meta property="og:image:secure_url" content="https://cdn.example/og.jpg">',
+        '<meta name="twitter:image" content="https://cdn.example/og.jpg">',
+        '<link rel="image_src" href="https://cdn.example/og.jpg">',
+        "<meta property=og:image content=https://cdn.example/og.jpg>",
+    ],
+)
+def test_ways_to_write_the_preview_picture(meta: str) -> None:
+    assert parse_recipe(with_meta(meta, recipe()), URL)["image_urls"] == [
+        "https://cdn.example/og.jpg"
+    ]
+
+
+def test_the_preview_picture_may_be_relative_and_has_html_entities() -> None:
+    meta = '<meta property="og:image" content="/img/a.jpg?w=1&amp;h=2">'
+    assert parse_recipe(with_meta(meta, recipe()), URL)["image_urls"] == [
+        "https://recipes.example/img/a.jpg?w=1&h=2"
+    ]
+
+
+def test_the_best_preview_picture_comes_first() -> None:
+    meta = (
+        '<meta name="twitter:image" content="https://cdn.example/t.jpg">'
+        '<meta property="og:image" content="https://cdn.example/o.jpg">'
+        '<link rel="image_src" href="https://cdn.example/l.jpg">'
+    )
+    assert parse_recipe(with_meta(meta, recipe()), URL)["image_urls"] == [
+        "https://cdn.example/o.jpg",
+        "https://cdn.example/t.jpg",
+    ]
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        '<meta property="og:image" content="javascript:alert(1)">',
+        '<meta property="og:image" content="data:image/png;base64,AAAA">',
+        '<meta property="og:image" content="">',
+        '<meta property="og:title" content="https://cdn.example/not-a-picture.jpg">',
+        '<meta property="og:image">',
+        '<link rel="stylesheet" href="https://cdn.example/style.css">',
+    ],
+)
+def test_preview_entries_that_are_no_pictures_are_ignored(meta: str) -> None:
+    assert parse_recipe(with_meta(meta, recipe()), URL)["image_urls"] == []
+
+
+def test_a_page_without_any_picture_has_an_empty_list() -> None:
+    assert parse(recipe())["image_urls"] == []
 
 
 # -- limits
@@ -362,7 +500,7 @@ def test_texts_are_cut_to_the_limits_of_the_library() -> None:
     assert len(draft["notes"]) <= 5000
     assert len(draft["servings"]) <= 100
     assert len(draft["time"]) <= 100
-    RecipeLibrary().save_recipe({k: v for k, v in draft.items() if k != "image_url"})
+    RecipeLibrary().save_recipe({k: v for k, v in draft.items() if k != "image_urls"})
 
 
 def test_a_very_long_page_address_is_not_taken_as_source() -> None:

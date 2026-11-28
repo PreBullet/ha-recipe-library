@@ -17,6 +17,7 @@ from custom_components.recipe_library.fetch import (
     NotHtmlError,
     PageTooLargeError,
     SafeResolver,
+    _origin,
     check_url,
     decode_html,
     fetch_image,
@@ -507,6 +508,47 @@ async def test_loads_a_picture(make_site: Callable[..., Any]) -> None:
 
     assert (data, extension) == (JPEG, "jpg")
     assert "image/jpeg" in site.requests[0].headers["Accept"]
+
+
+async def test_a_picture_is_asked_for_with_the_origin_of_its_page(
+    make_site: Callable[..., Any],
+) -> None:
+    site = await make_site({"/p.jpg": image_handler(JPEG)})
+
+    await fetch_image(site.url("/p.jpg"), referer=site.url("/recipes/1?token=secret"))
+
+    assert site.requests[0].headers["Referer"] == site.url("/")
+
+
+@pytest.mark.parametrize("referer", [None, "", "not a web address", "ftp://x.example/"])
+async def test_no_referer_without_a_usable_page_address(
+    make_site: Callable[..., Any], referer: str | None
+) -> None:
+    site = await make_site({"/p.jpg": image_handler(JPEG)})
+
+    await fetch_image(site.url("/p.jpg"), referer=referer)
+
+    assert "Referer" not in site.requests[0].headers
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("https://www.example.com/a/b?c=1#d", "https://www.example.com/"),
+        ("http://example.com:80/x", "http://example.com/"),
+        ("https://example.com:443/x", "https://example.com/"),
+        ("http://127.0.0.1:8123/p", "http://127.0.0.1:8123/"),
+        ("https://user:secret@example.com/x", "https://example.com/"),
+        ("https://b\u00fccher.example/x", "https://xn--bcher-kva.example/"),
+        ("ftp://example.com/", None),
+        ("javascript:alert(1)", None),
+        ("/relative", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_origin_for_the_referer(address: str | None, expected: str | None) -> None:
+    assert _origin(address) == expected
 
 
 async def test_the_picture_type_is_judged_by_content_not_by_header(
